@@ -4,6 +4,24 @@ Self-hosted *Claw orchestration platform.
 
 ## Development
 
+Build everything locally:
+
+```bash
+make build
+```
+
+Run the full local verification suite:
+
+```bash
+make verify
+```
+
+Build the self-contained backend + UI container image:
+
+```bash
+make docker-build IMAGE=shclop:latest
+```
+
 Run the backend in dev/mock mode:
 
 ```bash

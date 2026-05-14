@@ -18,6 +18,7 @@ func main() {
 	flag.BoolVar(&cfg.MockSecrets, "mock-secrets", cfg.MockSecrets, "enable mock SecretStore")
 	flag.StringVar(&cfg.Store, "store", cfg.Store, "store backend: inmemory")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level: debug/info/warn/error")
+	flag.StringVar(&cfg.StaticDir, "static-dir", cfg.StaticDir, "frontend static files directory")
 	flag.BoolVar(&cfg.Metrics, "metrics", cfg.Metrics, "enable metrics endpoint")
 	flag.Parse()
 

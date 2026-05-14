@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -203,8 +205,43 @@ func TestWrongMethodsReturnMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestServesFrontendIndexAndSPAFallback(t *testing.T) {
+	staticDir := t.TempDir()
+	index := []byte(`<!doctype html><title>shclop ui</title><div id="root"></div>`)
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), index, 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	server := newTestServerWithConfig(config.Config{
+		Addr:      ":8080",
+		Store:     "inmemory",
+		LogLevel:  "info",
+		Metrics:   true,
+		StaticDir: staticDir,
+	})
+
+	for _, path := range []string{"/", "/agents/agent-1"} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+			}
+			if got := response.Body.String(); got != string(index) {
+				t.Fatalf("expected index body %q, got %q", string(index), got)
+			}
+		})
+	}
+}
+
 func newTestServer() *Server {
-	return NewServer(config.Default(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newTestServerWithConfig(config.Default())
+}
+
+func newTestServerWithConfig(cfg config.Config) *Server {
+	return NewServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func loginAsAdmin(t *testing.T, server *Server) string {

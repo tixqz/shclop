@@ -9,8 +9,9 @@ type Config struct {
 	Store       string
 	LogLevel    string
 	Metrics     bool
+	StaticDir   string
 }
 
 func Default() Config {
-	return Config{Addr: ":8080", Store: "inmemory", LogLevel: "info", Metrics: true}
+	return Config{Addr: ":8080", Store: "inmemory", LogLevel: "info", Metrics: true, StaticDir: "web/dist"}
 }

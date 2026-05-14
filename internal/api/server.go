@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/gorilla/websocket"
@@ -54,6 +56,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/auth/login", s.handleLogin)
 	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/ws", s.handleWebSocket)
+	mux.HandleFunc("/", s.handleFrontend)
 	return mux
 }
 
@@ -202,6 +205,34 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, "GET, HEAD")
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
+	if s.cfg.StaticDir == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	requested := filepath.Join(s.cfg.StaticDir, filepath.Clean(r.URL.Path))
+	if info, err := os.Stat(requested); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, requested)
+		return
+	}
+
+	index := filepath.Join(s.cfg.StaticDir, "index.html")
+	if _, err := os.Stat(index); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, index)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) error {
