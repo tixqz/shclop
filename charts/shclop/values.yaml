@@ -1,0 +1,17 @@
+image:
+  repository: shclop
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+config:
+  logLevel: info
+  metrics: true
+
+dependencies:
+  bundledPostgres: true
+  bundledVault: true
+  bundledMinIO: true
