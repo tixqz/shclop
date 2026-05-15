@@ -2,13 +2,9 @@
 
 Shclop is an open-source platform for running organization-controlled AI agents.
 
-The point is not to make another chat UI. The point is to give teams a place where agent access to models, tools, secrets, browsers, shells, schedules, and networks can be configured once, audited, and operated without every team inventing its own unsafe wrapper.
+The point is to give teams a place where agent access to models, tools, secrets, browsers, shells, schedules, and networks can be configured once, audited, and operated without every team inventing its own unsafe wrapper.
 
 ## Motivation
-
-Useful agents stop being harmless as soon as they can do real work.
-
-They need model credentials, browser access, repository access, files, schedulers, webhooks, shell commands, and sometimes package installs. If every user connects these pieces by hand, the organization loses the things it normally expects from infrastructure: reviewable configuration, isolation, revocation, logs, and a way to answer “who allowed this action?” after an incident.
 
 Shclop is designed around a stricter model:
 
@@ -139,6 +135,7 @@ Useful targets:
 ```bash
 make test
 make web-build
+make runtime-images
 make helm-template
 make bootstrap-check
 make clean
@@ -242,25 +239,40 @@ go test ./...
 
 This repository currently contains the foundation slice:
 
-- Go backend entrypoint, config, logging, REST API, local auth, in-memory store, and mock WebSocket runtime.
+- Go backend entrypoint, config, logging, REST API, local auth, in-memory and Postgres-backed agent store, and WebSocket endpoints for browser chat and runtime registration.
 - React/Vite/TypeScript UI served separately in dev or embedded in the built container image.
 - Dockerfile for a single backend+UI image.
-- Helm chart skeleton for the backend service.
+- Helm chart skeleton for the backend service, Postgres DSN wiring, and runtime image settings.
 - Bootstrap script skeleton with local default and explicit `--remote user@host` execution.
-- Design and implementation plan documents under `docs/superpowers/`.
+- Runtime image skeletons for NanoClaw, NemoClaw, and OpenClaw using their official install paths.
+- Kata sandbox provider foundation that builds the hardened agent pod spec shape: RuntimeClass, no service account token, no privileged mode, read-only root filesystem, dropped capabilities, workspace and memory mounts.
+
+Schema migrations currently live under `migrations/`. The first migration creates the `agents` table used by the Postgres store.
+
+The runtime images are bootstrap skeletons. They intentionally follow the upstream install paths for now, but they are not yet a pinned/signed supply-chain baseline. Treat them as a starting point for reproducible runtime images, not as final production images.
 
 Not implemented yet:
 
-- real Kubernetes sandbox provider;
-- real OpenClaw runtime image;
-- Postgres persistence;
-- Vault integration;
-- LLM Broker provider adapters;
-- Integration Broker connectors;
-- tenant/team RBAC;
-- real scheduler execution;
-- egress proxy enforcement;
-- metrics endpoint and production dashboards;
-- backups, upgrades, and restore workflows.
+- **Kubernetes sandbox controller.** The repository now has the agent pod spec builder and Kata runtime image catalog boundary, but the backend still does not talk to the Kubernetes API. This layer should create, start, idle, and delete runtime pods and PVCs; watch pod status; collect logs; attach NetworkPolicies; and clean up abandoned resources.
+
+- **Real runtime adapter.** The runtime images install NanoClaw, NemoClaw, or OpenClaw and expose the expected workspace/memory paths, but the adapter is still a launch wrapper. It must become the process that connects to the Shclop runtime WebSocket endpoint, registers the agent, receives tasks, invokes the selected agent CLI, streams events, and exits cleanly on shutdown.
+
+- **Full Postgres platform schema.** Agents can use Postgres, but the durable platform model is still incomplete. Production needs tables for users, tenants, teams, sessions, messages, schedules, approvals, grants, lifecycle state, tool/action ledgers, usage, and audit records. Agent memory still belongs in workspace files; Postgres is for platform state and ordering.
+
+- **Vault integration.** Secrets are not wired yet. The platform needs a SecretStore implementation where model credentials, OAuth refresh tokens, provider keys, connector material, and signing keys are stored by reference. Agent runtimes should never receive Vault tokens or provider credentials.
+
+- **LLM Broker provider adapters.** Model calls currently have no real broker. This layer should route runtime model requests through platform policy, quotas, audit, and provider-specific adapters: OpenAI-compatible APIs, Anthropic, Vertex/Gemini, local Ollama/vLLM, or an internal corporate LLM gateway.
+
+- **Integration Broker connectors.** The design calls for typed integration actions, but the connectors are not implemented. Examples: `github.create_pull_request`, `slack.post_message`, `notion.update_page`. Connectors should perform policy checks, request scoped secrets just in time, call provider APIs, and write an audit record.
+
+- **Tenant/team RBAC.** The current auth path is local `admin/admin`. Production needs tenants, teams, roles, ownership, invitations or identity-provider mapping, and permission checks for agent creation, approvals, schedule ownership, integration grants, and admin guardrails.
+
+- **Scheduler execution.** Schedule concepts are architectural only. The platform needs a durable schedule table, lease-based Go workers, timezone handling, retry policy, owner approval for agent-created schedules, and a path that wakes an idle agent before delivering the scheduled task.
+
+- **Egress proxy enforcement.** The README describes deny-by-default egress, but no proxy or NetworkPolicy generator exists yet. This layer should block private ranges and arbitrary internet by default, allow explicit destinations per agent/tool/grant, log denies, and surface approval prompts when an agent requests new access.
+
+- **Metrics endpoint and production dashboards.** The CLI has a metrics flag, but there is no useful metrics surface yet. The next step is to expose API, gateway, scheduler, broker, runtime lifecycle, secret-use, and egress metrics with labels that work for Prometheus without leaking tenant data.
+
+- **Backups, upgrades, and restore workflows.** The platform needs operator procedures for Postgres PITR, workspace/PVC snapshots, object storage versioning, Vault backup/restore, Helm upgrades, schema migrations, and per-agent restore tests.
 
 That separation is intentional. The foundation should be buildable and reviewable before the security-sensitive runtime, credential, and policy layers are added.

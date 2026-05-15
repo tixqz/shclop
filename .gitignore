@@ -1,4 +1,6 @@
 .worktrees/
+.firecrawl/
 bin/
 web/node_modules/
 web/dist/
+docs/superpowers

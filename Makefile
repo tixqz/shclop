@@ -1,7 +1,8 @@
 IMAGE ?= shclop:latest
 BINARY ?= bin/shclop
+RUNTIME_IMAGE_PREFIX ?= shclop-runtime
 
-.PHONY: test web-install web-build build docker-build helm-template bootstrap-check verify clean
+.PHONY: test web-install web-build build docker-build runtime-images helm-template bootstrap-check verify clean
 
 test:
 	go test ./...
@@ -18,6 +19,11 @@ build: web-build
 
 docker-build:
 	docker build -t $(IMAGE) .
+
+runtime-images:
+	docker build -f runtime/nanoclaw/Dockerfile -t $(RUNTIME_IMAGE_PREFIX)-nanoclaw:latest .
+	docker build -f runtime/nemoclaw/Dockerfile -t $(RUNTIME_IMAGE_PREFIX)-nemoclaw:latest .
+	docker build -f runtime/openclaw/Dockerfile -t $(RUNTIME_IMAGE_PREFIX)-openclaw:latest .
 
 helm-template:
 	helm template shclop charts/shclop

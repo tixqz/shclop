@@ -23,7 +23,11 @@ func main() {
 	flag.Parse()
 
 	logger := logging.New(cfg.LogLevel)
-	if err := api.NewServer(cfg, logger).ListenAndServe(); err != nil {
+	server, err := api.NewServer(cfg, logger)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

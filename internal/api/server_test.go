@@ -40,6 +40,9 @@ func TestLoginAndCreateAgent(t *testing.T) {
 	if login.Code != http.StatusOK {
 		t.Fatalf("expected login status %d, got %d", http.StatusOK, login.Code)
 	}
+	if cookie := login.Result().Cookies(); len(cookie) == 0 || cookie[0].Name != "shclop_session" {
+		t.Fatalf("expected shclop_session cookie, got %#v", cookie)
+	}
 	token := assertJSONField(t, login.Body.Bytes(), "token", "")
 	if token == "" {
 		t.Fatal("expected non-empty token")
@@ -131,11 +134,13 @@ func TestCreateAgentRejectsBadPayload(t *testing.T) {
 
 func TestWebSocketStreamsMockResponse(t *testing.T) {
 	server := newTestServer()
+	token := loginAsAdmin(t, server)
 	testServer := httptest.NewServer(server.Handler())
 	t.Cleanup(testServer.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/ws"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	header := http.Header{"Authorization": []string{"Bearer " + token}}
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
@@ -173,6 +178,21 @@ func TestWebSocketStreamsMockResponse(t *testing.T) {
 		if event.Type == "message.done" {
 			return
 		}
+	}
+}
+
+func TestWebSocketRequiresAuth(t *testing.T) {
+	server := newTestServer()
+	testServer := httptest.NewServer(server.Handler())
+	t.Cleanup(testServer.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/ws"
+	_, response, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected websocket handshake to fail without token")
+	}
+	if response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got response %#v and err %v", http.StatusUnauthorized, response, err)
 	}
 }
 
@@ -241,7 +261,11 @@ func newTestServer() *Server {
 }
 
 func newTestServerWithConfig(cfg config.Config) *Server {
-	return NewServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server, err := NewServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		panic(err)
+	}
+	return server
 }
 
 func loginAsAdmin(t *testing.T, server *Server) string {

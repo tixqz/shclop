@@ -10,6 +10,20 @@ service:
 config:
   logLevel: info
   metrics: true
+  store: inmemory
+  postgresDSNSecret:
+    name: ""
+    key: dsn
+  runtimeTokenSecret:
+    name: ""
+    key: token
+
+agentRuntime:
+  runtimeClassName: kata
+  images:
+    nanoclaw: shclop-runtime-nanoclaw:latest
+    nemoclaw: shclop-runtime-nemoclaw:latest
+    openclaw: shclop-runtime-openclaw:latest
 
 dependencies:
   bundledPostgres: true

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,19 @@ import (
 	"github.com/mipopov/shclop/internal/store"
 )
 
-var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+var wsUpgrader = websocket.Upgrader{CheckOrigin: sameOriginOrNoOrigin}
+
+func sameOriginOrNoOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return parsed.Host == r.Host
+}
 
 type Server struct {
 	cfg     config.Config
@@ -27,15 +40,19 @@ type Server struct {
 	handler http.Handler
 }
 
-func NewServer(cfg config.Config, logger *slog.Logger) *Server {
+func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
+	openedStore, err := store.Open(store.Config{Backend: cfg.Store, PostgresDSN: cfg.PostgresDSN})
+	if err != nil {
+		return nil, err
+	}
 	server := &Server{
 		cfg:    cfg,
 		auth:   auth.NewMemory(),
-		store:  store.NewMemory(),
+		store:  openedStore,
 		logger: logger,
 	}
 	server.handler = server.routes()
-	return server
+	return server, nil
 }
 
 func (s *Server) ListenAndServe() error {
@@ -56,6 +73,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/auth/login", s.handleLogin)
 	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/ws", s.handleWebSocket)
+	mux.HandleFunc("/runtime/ws", s.handleRuntimeWebSocket)
 	mux.HandleFunc("/", s.handleFrontend)
 	return mux
 }
@@ -89,6 +107,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	http.SetCookie(w, &http.Cookie{
+		Name:     "shclop_session",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"user":  user,
 		"token": token,
@@ -187,6 +212,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
+	if _, ok := s.requireUserFromRequest(w, r); !ok {
+		return
+	}
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -200,11 +228,63 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	text, _ := incoming.Payload["text"].(string)
 	runtime := gateway.MockRuntime{}
-	for _, event := range runtime.Respond(incoming.AgentID, incoming.SessionID, incoming.MessageID, text) {
+	for _, event := range runtime.Respond("mock-agent", incoming.SessionID, incoming.MessageID, text) {
 		if err := conn.WriteJSON(event); err != nil {
 			return
 		}
 	}
+}
+
+func (s *Server) handleRuntimeWebSocket(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	expectedAgentID, expectedSecret, ok := strings.Cut(s.cfg.RuntimeToken, ":")
+	if !ok || expectedAgentID == "" || expectedSecret == "" || r.Header.Get("Authorization") != "Bearer "+expectedSecret {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	var hello gateway.Envelope
+	if err := conn.ReadJSON(&hello); err != nil {
+		return
+	}
+	if hello.Type != "runtime.hello" || strings.TrimSpace(hello.AgentID) == "" || hello.AgentID != expectedAgentID {
+		_ = conn.WriteJSON(gateway.Envelope{Type: "runtime.rejected", AgentID: hello.AgentID, Payload: map[string]any{"reason": "invalid runtime hello"}})
+		return
+	}
+
+	_ = conn.WriteJSON(gateway.Envelope{Type: "runtime.accepted", AgentID: hello.AgentID, Seq: 1})
+}
+
+func (s *Server) requireUserFromRequest(w http.ResponseWriter, r *http.Request) (domain.User, bool) {
+	token := ""
+	if cookie, err := r.Cookie("shclop_session"); err == nil {
+		token = strings.TrimSpace(cookie.Value)
+	}
+	if token == "" {
+		const prefix = "Bearer "
+		if authorization := r.Header.Get("Authorization"); strings.HasPrefix(authorization, prefix) {
+			token = strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
+		}
+	}
+	if token == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return domain.User{}, false
+	}
+	user, ok := s.auth.Resolve(token)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return domain.User{}, false
+	}
+	return user, true
 }
 
 func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {

@@ -34,5 +34,29 @@ spec:
             - "--addr=:8080"
             - "--log-level={{ .Values.config.logLevel }}"
             - "--metrics={{ .Values.config.metrics }}"
+            - "--store={{ .Values.config.store }}"
+          env:
+            {{- if .Values.config.postgresDSNSecret.name }}
+            - name: SHCLOP_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.postgresDSNSecret.name }}
+                  key: {{ .Values.config.postgresDSNSecret.key }}
+            {{- end }}
+            {{- if .Values.config.runtimeTokenSecret.name }}
+            - name: SHCLOP_RUNTIME_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.runtimeTokenSecret.name }}
+                  key: {{ .Values.config.runtimeTokenSecret.key }}
+            {{- end }}
+            - name: SHCLOP_AGENT_RUNTIME_CLASS
+              value: {{ .Values.agentRuntime.runtimeClassName | quote }}
+            - name: SHCLOP_RUNTIME_IMAGE_NANOCLAW
+              value: {{ .Values.agentRuntime.images.nanoclaw | quote }}
+            - name: SHCLOP_RUNTIME_IMAGE_NEMOCLAW
+              value: {{ .Values.agentRuntime.images.nemoclaw | quote }}
+            - name: SHCLOP_RUNTIME_IMAGE_OPENCLAW
+              value: {{ .Values.agentRuntime.images.openclaw | quote }}
           ports:
             - containerPort: 8080
