@@ -132,9 +132,11 @@ func TestCreateAgentRejectsBadPayload(t *testing.T) {
 	}
 }
 
-func TestWebSocketStreamsMockResponse(t *testing.T) {
+func TestWebSocketReturnsErrorWhenRuntimeIsNotConnected(t *testing.T) {
 	server := newTestServer()
 	token := loginAsAdmin(t, server)
+	created := doJSON(t, server, http.MethodPost, "/api/agents", map[string]string{"name": "Demo"}, token)
+	agentID := assertJSONField(t, created.Body.Bytes(), "id", "")
 	testServer := httptest.NewServer(server.Handler())
 	t.Cleanup(testServer.Close)
 
@@ -152,7 +154,7 @@ func TestWebSocketStreamsMockResponse(t *testing.T) {
 
 	incoming := gateway.Envelope{
 		Type:      "message.create",
-		AgentID:   "agent-1",
+		AgentID:   agentID,
 		SessionID: "session-1",
 		MessageID: "msg-1",
 		Seq:       1,
@@ -162,22 +164,12 @@ func TestWebSocketStreamsMockResponse(t *testing.T) {
 		t.Fatalf("write websocket message: %v", err)
 	}
 
-	var first gateway.Envelope
-	if err := conn.ReadJSON(&first); err != nil {
-		t.Fatalf("read first websocket event: %v", err)
+	var event gateway.Envelope
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatalf("read websocket event: %v", err)
 	}
-	if first.Type != "message.started" {
-		t.Fatalf("expected first event message.started, got %q", first.Type)
-	}
-
-	for {
-		var event gateway.Envelope
-		if err := conn.ReadJSON(&event); err != nil {
-			t.Fatalf("read websocket event: %v", err)
-		}
-		if event.Type == "message.done" {
-			return
-		}
+	if event.Type != "message.error" {
+		t.Fatalf("expected message.error, got %q", event.Type)
 	}
 }
 

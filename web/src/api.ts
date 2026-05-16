@@ -3,7 +3,22 @@ type LoginResponse = {
   user?: unknown;
 };
 
-type StreamEnvelope = {
+export type Agent = {
+  id: string;
+  owner_id: string;
+  name: string;
+  state: string;
+  created_at: string;
+};
+
+export type StartAgentResponse = {
+  agent: Agent;
+  runtime: string;
+  runtime_token: string;
+  runtime_url: string;
+};
+
+export type StreamEnvelope = {
   type?: string;
   agent_id?: string;
   session_id?: string;
@@ -37,8 +52,34 @@ export async function login(username: string, password: string): Promise<string>
   return data.token;
 }
 
-export function streamMockChat(text: string, onEvent: (event: any) => void) {
-  return streamMockChatWithLifecycle(text, onEvent);
+export async function createAgent(token: string, name: string): Promise<Agent> {
+  const response = await fetch('/api/agents', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) {
+    throw new Error(`Create agent failed (${response.status})`);
+  }
+  return (await response.json()) as Agent;
+}
+
+export async function startAgent(token: string, agentID: string, runtime: string): Promise<StartAgentResponse> {
+  const response = await fetch(`/api/agents/${encodeURIComponent(agentID)}/start`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ runtime }),
+  });
+  if (!response.ok) {
+    throw new Error(`Start agent failed (${response.status})`);
+  }
+  return (await response.json()) as StartAgentResponse;
 }
 
 type StreamLifecycle = {
@@ -47,15 +88,16 @@ type StreamLifecycle = {
   onClose?: () => void;
 };
 
-export function streamMockChatWithLifecycle(
+export function streamAgentChat(
+  agentID: string,
   text: string,
-  onEvent: (event: any) => void,
+  onEvent: (event: StreamEnvelope) => void,
   lifecycle: StreamLifecycle = {},
 ) {
   const socket = new WebSocket(wsUrl('/ws'));
   const envelope: StreamEnvelope = {
     type: 'user.message',
-    agent_id: `agent-${crypto.randomUUID?.() ?? fallbackId()}`,
+    agent_id: agentID,
     session_id: `session-${crypto.randomUUID?.() ?? fallbackId()}`,
     message_id: `message-${crypto.randomUUID?.() ?? fallbackId()}`,
     payload: { text },

@@ -13,8 +13,12 @@ import (
 
 type Store interface {
 	CreateAgent(ctx context.Context, ownerID, name string) (domain.Agent, error)
+	GetAgent(ctx context.Context, agentID string) (domain.Agent, error)
 	ListAgents(ctx context.Context, ownerID string) ([]domain.Agent, error)
+	UpdateAgentState(ctx context.Context, agentID, state string) (domain.Agent, error)
 }
+
+var ErrNotFound = errors.New("not found")
 
 type Memory struct {
 	mu     sync.Mutex
@@ -57,6 +61,35 @@ func (m *Memory) ListAgents(ctx context.Context, ownerID string) ([]domain.Agent
 		}
 	}
 	return out, nil
+}
+
+func (m *Memory) GetAgent(ctx context.Context, agentID string) (domain.Agent, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.Agent{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, agent := range m.agents {
+		if agent.ID == agentID {
+			return agent, nil
+		}
+	}
+	return domain.Agent{}, ErrNotFound
+}
+
+func (m *Memory) UpdateAgentState(ctx context.Context, agentID, state string) (domain.Agent, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.Agent{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, agent := range m.agents {
+		if agent.ID == agentID {
+			m.agents[i].State = state
+			return m.agents[i], nil
+		}
+	}
+	return domain.Agent{}, ErrNotFound
 }
 
 func newID() (string, error) {

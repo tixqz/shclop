@@ -70,6 +70,39 @@ func (p *Postgres) ListAgents(ctx context.Context, ownerID string) ([]domain.Age
 	return agents, nil
 }
 
+func (p *Postgres) GetAgent(ctx context.Context, agentID string) (domain.Agent, error) {
+	var agent domain.Agent
+	err := p.db.QueryRowContext(ctx, `
+		select id, owner_id, name, state, created_at
+		from agents
+		where id = $1
+	`, agentID).Scan(&agent.ID, &agent.OwnerID, &agent.Name, &agent.State, &agent.CreatedAt)
+	if err == sql.ErrNoRows {
+		return domain.Agent{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Agent{}, err
+	}
+	return agent, nil
+}
+
+func (p *Postgres) UpdateAgentState(ctx context.Context, agentID, state string) (domain.Agent, error) {
+	var agent domain.Agent
+	err := p.db.QueryRowContext(ctx, `
+		update agents
+		set state = $2
+		where id = $1
+		returning id, owner_id, name, state, created_at
+	`, agentID, state).Scan(&agent.ID, &agent.OwnerID, &agent.Name, &agent.State, &agent.CreatedAt)
+	if err == sql.ErrNoRows {
+		return domain.Agent{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Agent{}, err
+	}
+	return agent, nil
+}
+
 func (p *Postgres) Close() error {
 	return p.db.Close()
 }

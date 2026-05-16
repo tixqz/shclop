@@ -47,6 +47,8 @@ body::before {
 }
 
 button,
+input,
+select,
 textarea {
   font: inherit;
 }
@@ -146,6 +148,10 @@ textarea {
   gap: 20px;
 }
 
+.grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .controls,
 .feed {
   padding: 22px;
@@ -163,10 +169,16 @@ textarea {
   color: var(--muted);
 }
 
+.input-wrap {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+}
+
+input,
+select,
 textarea {
   width: 100%;
-  resize: vertical;
-  min-height: 140px;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: var(--panel-strong);
@@ -176,6 +188,13 @@ textarea {
   transition: border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
 }
 
+textarea {
+  resize: vertical;
+  min-height: 140px;
+}
+
+input:focus,
+select:focus,
 textarea:focus {
   border-color: rgba(124, 92, 255, 0.7);
   box-shadow: 0 0 0 4px rgba(124, 92, 255, 0.16);
@@ -214,6 +233,31 @@ textarea:focus {
   gap: 16px;
 }
 
+.command-card {
+  display: grid;
+  gap: 12px;
+  padding: 22px;
+}
+
+.command-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.command {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(45, 226, 230, 0.18);
+  background: rgba(6, 12, 22, 0.82);
+  color: #c7f9ff;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.88rem;
+}
+
 .section-header h2 {
   font-size: 1.2rem;
   margin: 8px 0 0;
@@ -243,7 +287,8 @@ textarea:focus {
 }
 
 @media (max-width: 820px) {
-  .grid {
+  .grid,
+  .grid.three {
     grid-template-columns: 1fr;
   }
 

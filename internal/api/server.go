@@ -2,13 +2,17 @@ package api
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/gorilla/websocket"
 	"github.com/mipopov/shclop/internal/auth"
@@ -36,6 +40,9 @@ type Server struct {
 	cfg     config.Config
 	auth    auth.Service
 	store   store.Store
+	runtime *gateway.RuntimeRegistry
+	tokens  map[string]string
+	tokenMu sync.Mutex
 	logger  *slog.Logger
 	handler http.Handler
 }
@@ -49,6 +56,8 @@ func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
 		cfg:    cfg,
 		auth:   auth.NewMemory(),
 		store:  openedStore,
+		runtime: gateway.NewRuntimeRegistry(),
+		tokens: map[string]string{},
 		logger: logger,
 	}
 	server.handler = server.routes()
@@ -72,10 +81,33 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/auth/login", s.handleLogin)
 	mux.HandleFunc("/api/agents", s.handleAgents)
+	mux.HandleFunc("/api/agents/", s.handleAgent)
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	mux.HandleFunc("/runtime/ws", s.handleRuntimeWebSocket)
 	mux.HandleFunc("/", s.handleFrontend)
 	return mux
+}
+
+func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/agents/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 2 && parts[1] == "start" {
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		s.handleStartAgent(w, r, parts[0])
+		return
+	}
+	if len(parts) == 1 && parts[0] != "" {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w, http.MethodGet)
+			return
+		}
+		s.handleGetAgent(w, r, parts[0])
+		return
+	}
+	http.NotFound(w, r)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -172,6 +204,71 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, agents)
 }
 
+func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	agent, ok := s.requireOwnedAgent(w, r, user.ID, agentID)
+	if !ok {
+		return
+	}
+	s.writeJSON(w, http.StatusOK, agent)
+}
+
+func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := s.requireOwnedAgent(w, r, user.ID, agentID); !ok {
+		return
+	}
+	var request struct {
+		Runtime string `json:"runtime"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&request)
+	if strings.TrimSpace(request.Runtime) == "" {
+		request.Runtime = "openclaw"
+	}
+	secret, err := randomSecret()
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	s.tokenMu.Lock()
+	s.tokens[agentID] = secret
+	s.tokenMu.Unlock()
+	agent, err := s.store.UpdateAgentState(r.Context(), agentID, "starting")
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusAccepted, map[string]any{
+		"agent":         agent,
+		"runtime":       request.Runtime,
+		"runtime_token": secret,
+		"runtime_url":   "/runtime/ws",
+	})
+}
+
+func (s *Server) requireOwnedAgent(w http.ResponseWriter, r *http.Request, ownerID, agentID string) (domain.Agent, bool) {
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return domain.Agent{}, false
+	}
+	if err != nil {
+		s.writeStoreError(w, err)
+		return domain.Agent{}, false
+	}
+	if agent.OwnerID != ownerID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return domain.Agent{}, false
+	}
+	return agent, true
+}
+
 func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (domain.User, bool) {
 	const prefix = "Bearer "
 	authorization := r.Header.Get("Authorization")
@@ -212,7 +309,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	if _, ok := s.requireUserFromRequest(w, r); !ok {
+	user, ok := s.requireUserFromRequest(w, r)
+	if !ok {
 		return
 	}
 
@@ -226,10 +324,29 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err := conn.ReadJSON(&incoming); err != nil {
 		return
 	}
-	text, _ := incoming.Payload["text"].(string)
-	runtime := gateway.MockRuntime{}
-	for _, event := range runtime.Respond("mock-agent", incoming.SessionID, incoming.MessageID, text) {
+	agent, err := s.store.GetAgent(r.Context(), incoming.AgentID)
+	if errors.Is(err, store.ErrNotFound) || agent.OwnerID != user.ID {
+		_ = conn.WriteJSON(gateway.Envelope{Type: "message.error", AgentID: incoming.AgentID, SessionID: incoming.SessionID, MessageID: incoming.MessageID, Payload: map[string]any{"text": "agent not found"}})
+		return
+	}
+	if err != nil {
+		return
+	}
+	incoming.Type = "task.run"
+	events, cancel, err := s.runtime.SendTask(incoming.AgentID, incoming)
+	if errors.Is(err, gateway.ErrRuntimeNotConnected) {
+		_ = conn.WriteJSON(gateway.Envelope{Type: "message.error", AgentID: incoming.AgentID, SessionID: incoming.SessionID, MessageID: incoming.MessageID, Payload: map[string]any{"text": "runtime not connected"}})
+		return
+	}
+	if err != nil {
+		return
+	}
+	defer cancel()
+	for event := range events {
 		if err := conn.WriteJSON(event); err != nil {
+			return
+		}
+		if event.Type == "message.done" || event.Type == "message.error" {
 			return
 		}
 	}
@@ -240,11 +357,13 @@ func (s *Server) handleRuntimeWebSocket(w http.ResponseWriter, r *http.Request) 
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	expectedAgentID, expectedSecret, ok := strings.Cut(s.cfg.RuntimeToken, ":")
-	if !ok || expectedAgentID == "" || expectedSecret == "" || r.Header.Get("Authorization") != "Bearer "+expectedSecret {
+	const prefix = "Bearer "
+	authorization := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, prefix) || strings.TrimSpace(strings.TrimPrefix(authorization, prefix)) == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	secret := strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -256,12 +375,29 @@ func (s *Server) handleRuntimeWebSocket(w http.ResponseWriter, r *http.Request) 
 	if err := conn.ReadJSON(&hello); err != nil {
 		return
 	}
-	if hello.Type != "runtime.hello" || strings.TrimSpace(hello.AgentID) == "" || hello.AgentID != expectedAgentID {
+	if hello.Type != "runtime.hello" || strings.TrimSpace(hello.AgentID) == "" || !s.validRuntimeToken(hello.AgentID, secret) {
 		_ = conn.WriteJSON(gateway.Envelope{Type: "runtime.rejected", AgentID: hello.AgentID, Payload: map[string]any{"reason": "invalid runtime hello"}})
 		return
 	}
 
+	s.runtime.Register(hello.AgentID, conn)
+	defer s.runtime.Unregister(hello.AgentID, conn)
+	_, _ = s.store.UpdateAgentState(r.Context(), hello.AgentID, "running")
 	_ = conn.WriteJSON(gateway.Envelope{Type: "runtime.accepted", AgentID: hello.AgentID, Seq: 1})
+	for {
+		var event gateway.Envelope
+		if err := conn.ReadJSON(&event); err != nil {
+			_, _ = s.store.UpdateAgentState(r.Context(), hello.AgentID, "idle")
+			return
+		}
+		s.runtime.Dispatch(hello.AgentID, conn, event)
+	}
+}
+
+func (s *Server) validRuntimeToken(agentID, secret string) bool {
+	s.tokenMu.Lock()
+	defer s.tokenMu.Unlock()
+	return s.tokens[agentID] != "" && s.tokens[agentID] == secret
 }
 
 func (s *Server) requireUserFromRequest(w http.ResponseWriter, r *http.Request) (domain.User, bool) {
@@ -331,4 +467,12 @@ func writeJSON(w http.ResponseWriter, status int, value any) error {
 func methodNotAllowed(w http.ResponseWriter, allow string) {
 	w.Header().Set("Allow", allow)
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+func randomSecret() (string, error) {
+	var b [24]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }

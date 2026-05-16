@@ -10,6 +10,10 @@ export default defineConfig({
         target: 'ws://localhost:8080',
         ws: true,
       },
+      '/runtime/ws': {
+        target: 'ws://localhost:8080',
+        ws: true,
+      },
     },
   },
 });

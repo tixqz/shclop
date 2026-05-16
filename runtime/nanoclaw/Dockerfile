@@ -1,8 +1,16 @@
+FROM golang:1.25-bookworm AS runtime-build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/shclop-runtime ./cmd/shclop-runtime
+
 FROM node:24-bookworm-slim
 
 RUN npm install -g nano-claw
 
 COPY runtime/adapter/shclop-runtime-adapter.sh /usr/local/bin/shclop-runtime-adapter
+COPY --from=runtime-build /out/shclop-runtime /usr/local/bin/shclop-runtime
 RUN chmod +x /usr/local/bin/shclop-runtime-adapter \
     && addgroup --system --gid 10001 shclop \
     && adduser --system --uid 10001 --ingroup shclop shclop \

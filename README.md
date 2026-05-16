@@ -215,10 +215,31 @@ Security boundaries:
 
 ## Development
 
-Run the backend in dev/mock mode:
+Run the backend in dev mode:
 
 ```bash
-go run ./cmd/shclop --dev --mock-runtime --mock-llm --mock-secrets --store inmemory
+go run ./cmd/shclop --dev --store inmemory
+```
+
+Open `http://localhost:8080`, log in as `admin/admin`, create an agent, and start it. The UI prints a runtime command similar to:
+
+```bash
+go run ./cmd/shclop-runtime \
+  --gateway ws://localhost:8080/runtime/ws \
+  --agent-id <agent-id> \
+  --token <runtime-token> \
+  --runtime openclaw
+```
+
+Run that command in a second terminal. Then send a chat task from the UI. The browser message is routed through the Shclop Agent Gateway to the connected runtime process, and the runtime streams `message.started`, `message.delta`, and `message.done` events back to the browser.
+
+Inside a runtime image the same process is started by environment variables:
+
+```bash
+SHCLOP_GATEWAY_URL=ws://shclop-backend:8080/runtime/ws
+SHCLOP_AGENT_ID=<agent-id>
+SHCLOP_RUNTIME_TOKEN=<runtime-token>
+SHCLOP_AGENT_FLAVOR=openclaw
 ```
 
 Run the frontend against the backend during UI work:
@@ -244,7 +265,7 @@ This repository currently contains the foundation slice:
 - Dockerfile for a single backend+UI image.
 - Helm chart skeleton for the backend service, Postgres DSN wiring, and runtime image settings.
 - Bootstrap script skeleton with local default and explicit `--remote user@host` execution.
-- Runtime image skeletons for NanoClaw, NemoClaw, and OpenClaw using their official install paths.
+- Runtime image skeletons for NanoClaw, NemoClaw, and OpenClaw using their official install paths, plus a demo runtime process that connects to the Shclop runtime WebSocket and streams task events.
 - Kata sandbox provider foundation that builds the hardened agent pod spec shape: RuntimeClass, no service account token, no privileged mode, read-only root filesystem, dropped capabilities, workspace and memory mounts.
 
 Schema migrations currently live under `migrations/`. The first migration creates the `agents` table used by the Postgres store.
@@ -255,7 +276,7 @@ Not implemented yet:
 
 - **Kubernetes sandbox controller.** The repository now has the agent pod spec builder and Kata runtime image catalog boundary, but the backend still does not talk to the Kubernetes API. This layer should create, start, idle, and delete runtime pods and PVCs; watch pod status; collect logs; attach NetworkPolicies; and clean up abandoned resources.
 
-- **Real runtime adapter.** The runtime images install NanoClaw, NemoClaw, or OpenClaw and expose the expected workspace/memory paths, but the adapter is still a launch wrapper. It must become the process that connects to the Shclop runtime WebSocket endpoint, registers the agent, receives tasks, invokes the selected agent CLI, streams events, and exits cleanly on shutdown.
+- **Real Claw execution inside the runtime.** The runtime process now connects to Shclop, registers the agent, receives tasks, and streams demo events. It does not yet invoke NanoClaw, NemoClaw, or OpenClaw for real work. The next step is to translate `task.run` envelopes into the selected agent CLI invocation, stream stdout/stderr as structured events, enforce workspace/memory paths, and shut down cleanly on platform cancellation.
 
 - **Full Postgres platform schema.** Agents can use Postgres, but the durable platform model is still incomplete. Production needs tables for users, tenants, teams, sessions, messages, schedules, approvals, grants, lifecycle state, tool/action ledgers, usage, and audit records. Agent memory still belongs in workspace files; Postgres is for platform state and ordering.
 

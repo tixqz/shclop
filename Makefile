@@ -1,5 +1,6 @@
 IMAGE ?= shclop:latest
 BINARY ?= bin/shclop
+RUNTIME_BINARY ?= bin/shclop-runtime
 RUNTIME_IMAGE_PREFIX ?= shclop-runtime
 
 .PHONY: test web-install web-build build docker-build runtime-images helm-template bootstrap-check verify clean
@@ -16,6 +17,7 @@ web-build: web-install
 build: web-build
 	mkdir -p bin
 	go build -o $(BINARY) ./cmd/shclop
+	go build -o $(RUNTIME_BINARY) ./cmd/shclop-runtime
 
 docker-build:
 	docker build -t $(IMAGE) .
