@@ -118,34 +118,41 @@ The main artifact is a single OCI image containing the Go backend and the compil
 make docker-build IMAGE=shclop:latest
 ```
 
-Local build without Docker:
+Build runtime images for local/demo agents:
 
 ```bash
-make build
-```
-
-Full local verification:
-
-```bash
-make verify
-```
-
-Useful targets:
-
-```bash
-make test
-make web-build
 make runtime-images
-make helm-template
-make bootstrap-check
-make clean
 ```
 
-The backend serves the UI from `web/dist` by default. Override it when needed:
+Detailed development, testing, and UI workflow notes live in [`DEVELOPMENT.md`](DEVELOPMENT.md).
+
+## Local functional demo
+
+The local demo uses Docker only as a convenience launcher for runtime containers. It is not the production isolation model.
 
 ```bash
-shclop --static-dir=/path/to/dist
+make runtime-images
+
+go run ./cmd/shclop \
+  --dev \
+  --store inmemory \
+  --sandbox-provider docker-demo
 ```
+
+Open `http://localhost:8080`, log in as `admin/admin`, create an agent, start it, and send a chat task. The backend starts a local runtime container, the runtime connects back to `/runtime/ws`, and browser messages stream through the Agent Gateway.
+
+For identity-provider mapping demos:
+
+```bash
+go run ./cmd/shclop \
+  --dev \
+  --store inmemory \
+  --sandbox-provider docker-demo \
+  --identity-provider mock-yaml \
+  --identity-mock-yaml config/identity.mock.yaml
+```
+
+Demo users are `alice@acme.test/alice`, `bob@acme.test/bob`, and `eve@other.test/eve`.
 
 ## Multi-tenancy
 
@@ -213,49 +220,6 @@ Security boundaries:
 - Integration Broker exposes typed provider actions, not a generic HTTP proxy.
 - LLM Broker owns model credentials and policy; runtimes do not receive provider keys.
 
-## Development
-
-Run the backend in dev mode:
-
-```bash
-go run ./cmd/shclop --dev --store inmemory
-```
-
-Open `http://localhost:8080`, log in as `admin/admin`, create an agent, and start it. The UI prints a runtime command similar to:
-
-```bash
-go run ./cmd/shclop-runtime \
-  --gateway ws://localhost:8080/runtime/ws \
-  --agent-id <agent-id> \
-  --token <runtime-token> \
-  --runtime openclaw
-```
-
-Run that command in a second terminal. Then send a chat task from the UI. The browser message is routed through the Shclop Agent Gateway to the connected runtime process, and the runtime streams `message.started`, `message.delta`, and `message.done` events back to the browser.
-
-Inside a runtime image the same process is started by environment variables:
-
-```bash
-SHCLOP_GATEWAY_URL=ws://shclop-backend:8080/runtime/ws
-SHCLOP_AGENT_ID=<agent-id>
-SHCLOP_RUNTIME_TOKEN=<runtime-token>
-SHCLOP_AGENT_FLAVOR=openclaw
-```
-
-Run the frontend against the backend during UI work:
-
-```bash
-cd web
-npm install
-npm run dev
-```
-
-Run Go tests directly:
-
-```bash
-go test ./...
-```
-
 ## Status
 
 This repository currently contains the foundation slice:
@@ -263,9 +227,9 @@ This repository currently contains the foundation slice:
 - Go backend entrypoint, config, logging, REST API, local auth, in-memory and Postgres-backed agent store, and WebSocket endpoints for browser chat and runtime registration.
 - React/Vite/TypeScript UI served separately in dev or embedded in the built container image.
 - Dockerfile for a single backend+UI image.
-- Helm chart skeleton for the backend service, Postgres DSN wiring, and runtime image settings.
+- Helm chart skeleton for the backend service, Postgres DSN wiring, identity settings, sandbox settings, and runtime image settings.
 - Bootstrap script skeleton with local default and explicit `--remote user@host` execution.
-- Runtime image skeletons for NanoClaw, NemoClaw, and OpenClaw using their official install paths, plus a demo runtime process that connects to the Shclop runtime WebSocket and streams task events.
+- Runtime image skeletons for NanoClaw, NemoClaw, and OpenClaw using their official install paths, plus a demo runtime process that connects to the Shclop runtime WebSocket and streams task events. The `docker-demo` sandbox provider can launch those images through a local Docker daemon for single-machine demos.
 - Kata sandbox provider foundation that builds the hardened agent pod spec shape: RuntimeClass, no service account token, no privileged mode, read-only root filesystem, dropped capabilities, workspace and memory mounts.
 
 Schema migrations currently live under `migrations/`. The first migration creates the `agents` table used by the Postgres store.

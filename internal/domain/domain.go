@@ -3,8 +3,13 @@ package domain
 import "time"
 
 type User struct {
-	ID       string `json:"id"`
-	Username string `json:"username"`
+	ID          string   `json:"id"`
+	Username    string   `json:"username"`
+	Email       string   `json:"email,omitempty"`
+	DisplayName string   `json:"display_name,omitempty"`
+	TenantID    string   `json:"tenant_id,omitempty"`
+	TeamIDs     []string `json:"team_ids,omitempty"`
+	Roles       []string `json:"roles,omitempty"`
 }
 
 type Agent struct {

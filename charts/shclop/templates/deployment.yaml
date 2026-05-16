@@ -35,6 +35,11 @@ spec:
             - "--log-level={{ .Values.config.logLevel }}"
             - "--metrics={{ .Values.config.metrics }}"
             - "--store={{ .Values.config.store }}"
+            - "--identity-provider={{ .Values.identity.provider }}"
+            - "--identity-mock-yaml={{ .Values.identity.mockYAMLPath }}"
+            - "--sandbox-provider={{ .Values.sandbox.provider }}"
+            - "--docker-gateway-url={{ .Values.sandbox.dockerGatewayURL }}"
+            - "--runtime-image-prefix={{ .Values.sandbox.runtimeImagePrefix }}"
           env:
             {{- if .Values.config.postgresDSNSecret.name }}
             - name: SHCLOP_POSTGRES_DSN
@@ -42,13 +47,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.config.postgresDSNSecret.name }}
                   key: {{ .Values.config.postgresDSNSecret.key }}
-            {{- end }}
-            {{- if .Values.config.runtimeTokenSecret.name }}
-            - name: SHCLOP_RUNTIME_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.config.runtimeTokenSecret.name }}
-                  key: {{ .Values.config.runtimeTokenSecret.key }}
             {{- end }}
             - name: SHCLOP_AGENT_RUNTIME_CLASS
               value: {{ .Values.agentRuntime.runtimeClassName | quote }}

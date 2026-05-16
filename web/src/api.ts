@@ -14,7 +14,8 @@ export type Agent = {
 export type StartAgentResponse = {
   agent: Agent;
   runtime: string;
-  runtime_token: string;
+  provider?: string;
+  runtime_id?: string;
   runtime_url: string;
 };
 

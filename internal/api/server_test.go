@@ -75,6 +75,32 @@ func TestInvalidLoginReturnsUnauthorized(t *testing.T) {
 	}
 }
 
+func TestLoginWithMockYAMLIdentityProvider(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  alice@acme.test:
+    password: alice
+    subject: oidc|alice
+    name: Alice Admin
+    tenant: acme
+    teams: [platform]
+    roles: [admin]
+    groups: [platform-admins]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, StaticDir: "web/dist"})
+
+	response := doJSON(t, server, http.MethodPost, "/api/auth/login", map[string]string{"username": "alice@acme.test", "password": "alice"}, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected login status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+	user := assertJSONObject(t, response.Body.Bytes(), "user")
+	if user["id"] != "oidc|alice" || user["tenant_id"] != "acme" {
+		t.Fatalf("expected mapped identity user, got %#v", user)
+	}
+}
+
 func TestAgentsRequireValidBearerToken(t *testing.T) {
 	server := newTestServer()
 

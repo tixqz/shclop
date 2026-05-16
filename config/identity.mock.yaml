@@ -1,0 +1,27 @@
+users:
+  alice@acme.test:
+    password: alice
+    subject: oidc|alice
+    name: Alice Admin
+    tenant: acme
+    teams: [platform]
+    roles: [admin]
+    groups: [platform-admins]
+
+  bob@acme.test:
+    password: bob
+    subject: oidc|bob
+    name: Bob Developer
+    tenant: acme
+    teams: [engineering]
+    roles: [member]
+    groups: [developers]
+
+  eve@other.test:
+    password: eve
+    subject: oidc|eve
+    name: Eve External
+    tenant: other
+    teams: [external]
+    roles: [viewer]
+    groups: [external-viewers]

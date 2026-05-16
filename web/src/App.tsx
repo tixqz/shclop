@@ -8,9 +8,12 @@ type EventItem = {
 
 const DEV_USERNAME = 'admin';
 const DEV_PASSWORD = 'admin';
+const MOCK_USERS = 'mock-yaml users: alice@acme.test/alice, bob@acme.test/bob, eve@other.test/eve';
 
 export default function App() {
   const [token, setToken] = useState('');
+  const [username, setUsername] = useState(DEV_USERNAME);
+  const [password, setPassword] = useState(DEV_PASSWORD);
   const [agent, setAgent] = useState<Agent | null>(null);
   const [agentName, setAgentName] = useState('Demo OpenClaw');
   const [runtime, setRuntime] = useState('openclaw');
@@ -30,19 +33,13 @@ export default function App() {
     return 'Disconnected';
   }, [agent, runtimeStart, status, token]);
 
-  const runtimeCommand = useMemo(() => {
-    if (!agent || !runtimeStart) return '';
-    const url = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${runtimeStart.runtime_url}`;
-    return `go run ./cmd/shclop-runtime --gateway ${url} --agent-id ${agent.id} --token ${runtimeStart.runtime_token} --runtime ${runtimeStart.runtime}`;
-  }, [agent, runtimeStart]);
-
   useEffect(() => () => closeRef.current?.(), []);
 
   async function handleLogin() {
     setStatus('authenticating');
     setError('');
     try {
-      const nextToken = await login(DEV_USERNAME, DEV_PASSWORD);
+      const nextToken = await login(username, password);
       setToken(nextToken);
       setStatus('ready');
     } catch (err) {
@@ -138,7 +135,7 @@ export default function App() {
         <div className="eyebrow">Shclop functional demo</div>
         <h1>Browser → Gateway → Runtime</h1>
         <p>
-          Create an agent, start it, run the printed runtime command, then send a browser task and watch the runtime stream back events.
+          Create an agent, start it, then send a browser task and watch the selected runtime stream events back through the gateway.
         </p>
 
         <div className="status-row">
@@ -151,10 +148,18 @@ export default function App() {
       <section className="grid three">
         <div className="card controls">
           <div className="section-label">1. Login</div>
+          <label className="input-wrap">
+            <span>Username</span>
+            <input value={username} onChange={(e) => setUsername(e.target.value)} />
+          </label>
+          <label className="input-wrap">
+            <span>Password</span>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          </label>
           <button className="button secondary" onClick={handleLogin} disabled={status === 'authenticating'}>
-            {status === 'authenticating' ? 'Logging in…' : 'Login as dev admin'}
+            {status === 'authenticating' ? 'Logging in…' : 'Login'}
           </button>
-          <div className="hint">Uses {DEV_USERNAME}/{DEV_PASSWORD} against <code>/api/auth/login</code>.</div>
+          <div className="hint">Default local user: {DEV_USERNAME}/{DEV_PASSWORD}. {MOCK_USERS} when the server runs with <code>--identity-provider=mock-yaml</code>.</div>
         </div>
 
         <div className="card controls">
@@ -182,21 +187,20 @@ export default function App() {
           <button className="button secondary" onClick={handleStartAgent} disabled={!agent || status === 'working'}>
             Start agent
           </button>
-          <div className="hint">Issues a short demo runtime token and waits for <code>/runtime/ws</code>.</div>
+          {runtimeStart ? (
+            <div className="hint">
+              Provider: <code>{runtimeStart.provider ?? 'mock'}</code>
+              {runtimeStart.runtime_id ? <> · Runtime id: <code>{runtimeStart.runtime_id}</code></> : null}
+            </div>
+          ) : (
+            <div className="hint">With <code>--sandbox-provider=docker-demo</code>, the backend starts the local Docker runtime container.</div>
+          )}
         </div>
       </section>
 
-      {runtimeCommand ? (
-        <section className="card command-card">
-          <div className="section-label">4. Run runtime process</div>
-          <p>Run this in another terminal from the repository root, then send a chat message below.</p>
-          <pre className="command">{runtimeCommand}</pre>
-        </section>
-      ) : null}
-
       <section className="grid">
         <div className="card controls">
-          <div className="section-label">5. Chat task</div>
+          <div className="section-label">4. Chat task</div>
           <label className="textarea-wrap">
             <span>Message</span>
             <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={6} />

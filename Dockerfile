@@ -15,6 +15,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/shclop 
 FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 COPY --from=go-build /out/shclop /usr/local/bin/shclop
+COPY config/identity.mock.yaml /app/config/identity.mock.yaml
 COPY --from=web-build /src/web/dist /app/web/dist
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/shclop"]

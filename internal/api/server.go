@@ -19,6 +19,8 @@ import (
 	"github.com/mipopov/shclop/internal/config"
 	"github.com/mipopov/shclop/internal/domain"
 	"github.com/mipopov/shclop/internal/gateway"
+	"github.com/mipopov/shclop/internal/identity"
+	"github.com/mipopov/shclop/internal/sandbox"
 	"github.com/mipopov/shclop/internal/store"
 )
 
@@ -41,6 +43,7 @@ type Server struct {
 	auth    auth.Service
 	store   store.Store
 	runtime *gateway.RuntimeRegistry
+	sandbox sandbox.RuntimeProvider
 	tokens  map[string]string
 	tokenMu sync.Mutex
 	logger  *slog.Logger
@@ -52,16 +55,51 @@ func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	authService, err := authServiceFromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	sandboxProvider, err := sandboxProviderFromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	server := &Server{
-		cfg:    cfg,
-		auth:   auth.NewMemory(),
-		store:  openedStore,
+		cfg:     cfg,
+		auth:    authService,
+		store:   openedStore,
 		runtime: gateway.NewRuntimeRegistry(),
-		tokens: map[string]string{},
-		logger: logger,
+		sandbox: sandboxProvider,
+		tokens:  map[string]string{},
+		logger:  logger,
 	}
 	server.handler = server.routes()
 	return server, nil
+}
+
+func sandboxProviderFromConfig(cfg config.Config) (sandbox.RuntimeProvider, error) {
+	switch cfg.SandboxProvider {
+	case "", "mock":
+		return sandbox.MockRuntimeProvider{}, nil
+	case "docker-demo":
+		return sandbox.DockerDemoProvider{GatewayURL: cfg.DockerGatewayURL, ImagePrefix: cfg.RuntimeImagePrefix}, nil
+	default:
+		return nil, errors.New("unsupported sandbox provider: " + cfg.SandboxProvider)
+	}
+}
+
+func authServiceFromConfig(cfg config.Config) (auth.Service, error) {
+	switch cfg.IdentityProvider {
+	case "", "local":
+		return auth.NewMemory(), nil
+	case "mock-yaml":
+		provider, err := identity.NewMockYAMLProvider(cfg.IdentityMockYAMLPath)
+		if err != nil {
+			return nil, err
+		}
+		return auth.NewWithIdentity(provider, identity.StaticOrganizationMapper{}), nil
+	default:
+		return nil, errors.New("unsupported identity provider: " + cfg.IdentityProvider)
+	}
 }
 
 func (s *Server) ListenAndServe() error {
@@ -133,7 +171,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, token, err := s.auth.Login(request.Username, request.Password)
+	user, token, err := s.auth.Login(r.Context(), request.Username, request.Password)
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -244,9 +282,17 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 		s.writeStoreError(w, err)
 		return
 	}
+	lease, err := s.sandbox.Start(r.Context(), sandbox.StartRequest{AgentID: agentID, OwnerID: user.ID, Runtime: request.Runtime, RuntimeToken: secret})
+	if err != nil {
+		_, _ = s.store.UpdateAgentState(r.Context(), agentID, "idle")
+		s.writeStoreError(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusAccepted, map[string]any{
 		"agent":         agent,
 		"runtime":       request.Runtime,
+		"provider":      lease.Provider,
+		"runtime_id":    lease.ExternalID,
 		"runtime_token": secret,
 		"runtime_url":   "/runtime/ws",
 	})

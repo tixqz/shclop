@@ -14,9 +14,15 @@ config:
   postgresDSNSecret:
     name: ""
     key: dsn
-  runtimeTokenSecret:
-    name: ""
-    key: token
+
+identity:
+  provider: local
+  mockYAMLPath: config/identity.mock.yaml
+
+sandbox:
+  provider: mock
+  dockerGatewayURL: ws://host.docker.internal:8080/runtime/ws
+  runtimeImagePrefix: shclop-runtime
 
 agentRuntime:
   runtimeClassName: kata
