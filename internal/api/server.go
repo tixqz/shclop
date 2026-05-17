@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/mipopov/shclop/internal/auth"
@@ -39,15 +40,26 @@ func sameOriginOrNoOrigin(r *http.Request) bool {
 }
 
 type Server struct {
-	cfg     config.Config
-	auth    auth.Service
-	store   store.Store
-	runtime *gateway.RuntimeRegistry
-	sandbox sandbox.RuntimeProvider
-	tokens  map[string]string
-	tokenMu sync.Mutex
-	logger  *slog.Logger
-	handler http.Handler
+	cfg        config.Config
+	auth       auth.Service
+	store      store.Store
+	runtime    *gateway.RuntimeRegistry
+	sandbox    sandbox.RuntimeProvider
+	tokens     map[string]string
+	tokenMu    sync.Mutex
+	activityMu sync.Mutex
+	activity   []activityEntry
+	logger     *slog.Logger
+	handler    http.Handler
+}
+
+type activityEntry struct {
+	Time    time.Time      `json:"time"`
+	Type    string         `json:"type"`
+	ActorID string         `json:"actor_id,omitempty"`
+	AgentID string         `json:"agent_id,omitempty"`
+	Message string         `json:"message,omitempty"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -103,6 +115,9 @@ func authServiceFromConfig(cfg config.Config) (auth.Service, error) {
 }
 
 func (s *Server) ListenAndServe() error {
+	if s.logger != nil {
+		s.logger.Info("starting shclop server", "addr", s.cfg.Addr, "store", s.cfg.Store, "identity_provider", s.cfg.IdentityProvider, "sandbox_provider", s.cfg.SandboxProvider, "static_dir", s.cfg.StaticDir)
+	}
 	server := &http.Server{
 		Addr:    s.cfg.Addr,
 		Handler: s.Handler(),
@@ -118,6 +133,8 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/auth/login", s.handleLogin)
+	mux.HandleFunc("/api/activity", s.handleActivity)
+	mux.HandleFunc("/api/admin/overview", s.handleAdminOverview)
 	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/api/agents/", s.handleAgent)
 	mux.HandleFunc("/ws", s.handleWebSocket)
@@ -173,9 +190,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, token, err := s.auth.Login(r.Context(), request.Username, request.Password)
 	if err != nil {
+		s.recordActivity("auth.login_failed", "", "", "login failed", map[string]any{"username": request.Username})
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	s.recordActivity("auth.login", user.ID, "", "login succeeded", map[string]any{"username": user.Username, "tenant_id": user.TenantID, "roles": user.Roles})
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "shclop_session",
@@ -206,6 +225,9 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !requireRole(w, user, "member") {
+		return
+	}
 
 	var request struct {
 		Name string `json:"name"`
@@ -225,12 +247,16 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	s.recordActivity("agent.created", user.ID, agent.ID, "agent created", map[string]any{"name": agent.Name})
 	s.writeJSON(w, http.StatusCreated, agent)
 }
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
 	if !ok {
+		return
+	}
+	if !requireRole(w, user, "member") {
 		return
 	}
 
@@ -247,6 +273,9 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request, agentID 
 	if !ok {
 		return
 	}
+	if !requireRole(w, user, "member") {
+		return
+	}
 	agent, ok := s.requireOwnedAgent(w, r, user.ID, agentID)
 	if !ok {
 		return
@@ -257,6 +286,9 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request, agentID 
 func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentID string) {
 	user, ok := s.requireUser(w, r)
 	if !ok {
+		return
+	}
+	if !requireRole(w, user, "member") {
 		return
 	}
 	if _, ok := s.requireOwnedAgent(w, r, user.ID, agentID); !ok {
@@ -282,12 +314,15 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 		s.writeStoreError(w, err)
 		return
 	}
+	s.recordActivity("agent.start_requested", user.ID, agentID, "agent start requested", map[string]any{"runtime": request.Runtime})
 	lease, err := s.sandbox.Start(r.Context(), sandbox.StartRequest{AgentID: agentID, OwnerID: user.ID, Runtime: request.Runtime, RuntimeToken: secret})
 	if err != nil {
 		_, _ = s.store.UpdateAgentState(r.Context(), agentID, "idle")
+		s.recordActivity("sandbox.start_failed", user.ID, agentID, "sandbox start failed", map[string]any{"runtime": request.Runtime, "error": err.Error()})
 		s.writeStoreError(w, err)
 		return
 	}
+	s.recordActivity("sandbox.started", user.ID, agentID, "sandbox started", map[string]any{"runtime": request.Runtime, "provider": lease.Provider, "runtime_id": lease.ExternalID})
 	s.writeJSON(w, http.StatusAccepted, map[string]any{
 		"agent":         agent,
 		"runtime":       request.Runtime,
@@ -359,6 +394,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !requireRole(w, user, "member") {
+		return
+	}
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -387,6 +425,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	s.recordActivity("task.routed", user.ID, incoming.AgentID, "browser task routed to runtime", map[string]any{"message_id": incoming.MessageID})
 	defer cancel()
 	for event := range events {
 		if err := conn.WriteJSON(event); err != nil {
@@ -429,11 +468,13 @@ func (s *Server) handleRuntimeWebSocket(w http.ResponseWriter, r *http.Request) 
 	s.runtime.Register(hello.AgentID, conn)
 	defer s.runtime.Unregister(hello.AgentID, conn)
 	_, _ = s.store.UpdateAgentState(r.Context(), hello.AgentID, "running")
+	s.recordActivity("runtime.connected", "", hello.AgentID, "runtime connected", map[string]any{"remote_addr": r.RemoteAddr})
 	_ = conn.WriteJSON(gateway.Envelope{Type: "runtime.accepted", AgentID: hello.AgentID, Seq: 1})
 	for {
 		var event gateway.Envelope
 		if err := conn.ReadJSON(&event); err != nil {
 			_, _ = s.store.UpdateAgentState(r.Context(), hello.AgentID, "idle")
+			s.recordActivity("runtime.disconnected", "", hello.AgentID, "runtime disconnected", map[string]any{"error": err.Error()})
 			return
 		}
 		s.runtime.Dispatch(hello.AgentID, conn, event)
@@ -495,6 +536,105 @@ func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, index)
+}
+
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"activity": s.activityForUser(user)})
+}
+
+func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !hasRole(user, "admin") {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"identity_provider": s.cfg.IdentityProvider,
+		"sandbox_provider":  s.cfg.SandboxProvider,
+		"runtime_images": map[string]string{
+			"openclaw": s.cfg.RuntimeImagePrefix + "-openclaw:latest",
+			"nanoclaw": s.cfg.RuntimeImagePrefix + "-nanoclaw:latest",
+			"nemoclaw": s.cfg.RuntimeImagePrefix + "-nemoclaw:latest",
+		},
+		"users":    s.mockIdentityUsers(),
+		"activity": s.activitySnapshot(),
+	})
+}
+
+func (s *Server) recordActivity(eventType, actorID, agentID, message string, details map[string]any) {
+	entry := activityEntry{Time: time.Now().UTC(), Type: eventType, ActorID: actorID, AgentID: agentID, Message: message, Details: details}
+	if s.logger != nil {
+		s.logger.Info("activity", "type", eventType, "actor_id", actorID, "agent_id", agentID, "message", message)
+	}
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	s.activity = append(s.activity, entry)
+	if len(s.activity) > 200 {
+		s.activity = append([]activityEntry(nil), s.activity[len(s.activity)-200:]...)
+	}
+}
+
+func (s *Server) activitySnapshot() []activityEntry {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	return append([]activityEntry(nil), s.activity...)
+}
+
+func (s *Server) activityForUser(user domain.User) []activityEntry {
+	if hasRole(user, "admin") {
+		return s.activitySnapshot()
+	}
+	all := s.activitySnapshot()
+	filtered := make([]activityEntry, 0, len(all))
+	for _, entry := range all {
+		if entry.ActorID == user.ID {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func (s *Server) mockIdentityUsers() []identity.MockYAMLUserSummary {
+	if s.cfg.IdentityProvider != "mock-yaml" || s.cfg.IdentityMockYAMLPath == "" {
+		return nil
+	}
+	provider, err := identity.NewMockYAMLProvider(s.cfg.IdentityMockYAMLPath)
+	if err != nil {
+		return nil
+	}
+	return provider.Users()
+}
+
+func hasRole(user domain.User, role string) bool {
+	for _, current := range user.Roles {
+		if current == role {
+			return true
+		}
+	}
+	return false
+}
+
+func requireRole(w http.ResponseWriter, user domain.User, role string) bool {
+	if hasRole(user, role) {
+		return true
+	}
+	http.Error(w, "forbidden", http.StatusForbidden)
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) error {

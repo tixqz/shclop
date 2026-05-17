@@ -136,10 +136,12 @@ make runtime-images
 go run ./cmd/shclop \
   --dev \
   --store inmemory \
-  --sandbox-provider docker-demo
+  --sandbox-provider docker-demo \
+  --identity-provider mock-yaml \
+  --identity-mock-yaml config/identity.mock.yaml
 ```
 
-Open `http://localhost:8080`, log in as `admin/admin`, create an agent, start it, and send a chat task. The backend starts a local runtime container, the runtime connects back to `/runtime/ws`, and browser messages stream through the Agent Gateway.
+Open `http://localhost:8080`, log in as `bob@acme.test/bob`, create an agent, start it, and send a chat task. The backend starts a local runtime container, the runtime connects back to `/runtime/ws`, and browser messages stream through the Agent Gateway.
 
 For identity-provider mapping demos:
 
@@ -152,7 +154,7 @@ go run ./cmd/shclop \
   --identity-mock-yaml config/identity.mock.yaml
 ```
 
-Demo users are `alice@acme.test/alice`, `bob@acme.test/bob`, and `eve@other.test/eve`.
+Demo users are `alice@acme.test/alice`, `bob@acme.test/bob`, and `eve@other.test/eve`. If Shclop is started without `--identity-provider mock-yaml`, only the local fallback account `admin/admin` is available.
 
 ## Multi-tenancy
 
@@ -179,6 +181,8 @@ The practical rules:
 Secrets must not be mounted into an agent runtime. A compromised agent should not be able to read Vault, provider tokens, Kubernetes credentials, or another tenant’s data. Integration connectors request short-lived, tenant-scoped secret access per typed action. The secret path is derived by the platform from verified grant metadata, never supplied by the agent.
 
 For larger installations, shared connector pools are expected. They should still use request-scoped Vault access, exact-path policies, no list permission, short TTLs, and audit metadata containing tenant, integration, grant, action, and request IDs. High-risk tenants can be moved to dedicated connector pools or Vault namespaces.
+
+See [`USER_GUIDE.md`](USER_GUIDE.md) for the member flow and [`ADMIN_GUIDE.md`](ADMIN_GUIDE.md) for the read-only admin area.
 
 ## Monitoring
 

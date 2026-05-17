@@ -54,7 +54,7 @@ func (m *Memory) authenticate(ctx context.Context, username, password string) (d
 		if username != "admin" || password != "admin" {
 			return domain.User{}, errors.New("invalid credentials")
 		}
-		return domain.User{ID: "user-admin", Username: "admin"}, nil
+		return domain.User{ID: "user-admin", Username: "admin", Roles: []string{"member"}}, nil
 	}
 	external, err := m.provider.Authenticate(ctx, identity.AuthRequest{Username: username, Password: password})
 	if err != nil {

@@ -10,6 +10,8 @@ Run the backend with the local in-memory store:
 go run ./cmd/shclop --dev --store inmemory
 ```
 
+This local mode only enables the fallback `admin/admin` account. Use the mock YAML identity adapter below when testing the Bob/Alice demo flows.
+
 The backend serves the compiled UI from `web/dist` by default. Build the UI first when using the backend as the frontend server:
 
 ```bash
@@ -78,10 +80,12 @@ Run the backend with the Docker demo sandbox provider:
 go run ./cmd/shclop \
   --dev \
   --store inmemory \
-  --sandbox-provider docker-demo
+  --sandbox-provider docker-demo \
+  --identity-provider mock-yaml \
+  --identity-mock-yaml config/identity.mock.yaml
 ```
 
-Open `http://localhost:8080`, log in, create an agent, start it, and send a chat task.
+Open `http://localhost:8080`, log in as `bob@acme.test/bob`, create an agent, start it, and send a chat task.
 
 `docker-demo` launches local containers with the Docker CLI. It is a demo launcher, not a production isolation boundary.
 
@@ -143,4 +147,18 @@ make runtime-images
 make helm-template
 make bootstrap-check
 make clean
+```
+
+## Troubleshooting
+
+If the backend fails with `listen tcp :8080: bind: address already in use`, find the process:
+
+```bash
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+```
+
+Stop it with `kill <PID>`, or run Shclop on another port:
+
+```bash
+go run ./cmd/shclop --dev --store inmemory --addr :18080
 ```

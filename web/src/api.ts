@@ -1,6 +1,16 @@
 type LoginResponse = {
   token?: string;
-  user?: unknown;
+  user?: User;
+};
+
+export type User = {
+  id: string;
+  username: string;
+  email?: string;
+  display_name?: string;
+  tenant_id?: string;
+  team_ids?: string[];
+  roles?: string[];
 };
 
 export type Agent = {
@@ -19,6 +29,31 @@ export type StartAgentResponse = {
   runtime_url: string;
 };
 
+export type ActivityEntry = {
+  time: string;
+  type: string;
+  actor_id?: string;
+  agent_id?: string;
+  message?: string;
+  details?: Record<string, unknown>;
+};
+
+export type AdminOverview = {
+  identity_provider: string;
+  sandbox_provider: string;
+  runtime_images: Record<string, string>;
+  users: Array<{
+    email: string;
+    subject: string;
+    display_name?: string;
+    tenant_id: string;
+    team_ids?: string[];
+    roles?: string[];
+    groups?: string[];
+  }>;
+  activity: ActivityEntry[];
+};
+
 export type StreamEnvelope = {
   type?: string;
   agent_id?: string;
@@ -35,7 +70,7 @@ function wsUrl(path: string): string {
   return url.toString();
 }
 
-export async function login(username: string, password: string): Promise<string> {
+export async function login(username: string, password: string): Promise<{ token: string; user: User }> {
   const response = await fetch('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -50,7 +85,18 @@ export async function login(username: string, password: string): Promise<string>
   if (!data.token) {
     throw new Error('Login response missing token');
   }
-  return data.token;
+  if (!data.user) {
+    throw new Error('Login response missing user');
+  }
+  return { token: data.token, user: data.user };
+}
+
+export async function listAgents(token: string): Promise<Agent[]> {
+  const response = await fetch('/api/agents', { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) {
+    throw new Error(`List agents failed (${response.status})`);
+  }
+  return (await response.json()) as Agent[];
 }
 
 export async function createAgent(token: string, name: string): Promise<Agent> {
@@ -81,6 +127,23 @@ export async function startAgent(token: string, agentID: string, runtime: string
     throw new Error(`Start agent failed (${response.status})`);
   }
   return (await response.json()) as StartAgentResponse;
+}
+
+export async function getActivity(token: string): Promise<ActivityEntry[]> {
+  const response = await fetch('/api/activity', { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) {
+    throw new Error(`Activity failed (${response.status})`);
+  }
+  const data = (await response.json()) as { activity?: ActivityEntry[] };
+  return data.activity ?? [];
+}
+
+export async function getAdminOverview(token: string): Promise<AdminOverview> {
+  const response = await fetch('/api/admin/overview', { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) {
+    throw new Error(`Admin overview failed (${response.status})`);
+  }
+  return (await response.json()) as AdminOverview;
 }
 
 type StreamLifecycle = {

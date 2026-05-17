@@ -101,6 +101,103 @@ func TestLoginWithMockYAMLIdentityProvider(t *testing.T) {
 	}
 }
 
+func TestAdminOverviewRequiresAdminRoleAndReturnsEnvironment(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  alice@acme.test:
+    password: alice
+    subject: oidc|alice
+    name: Alice Admin
+    tenant: acme
+    teams: [platform]
+    roles: [admin]
+    groups: [platform-admins]
+  bob@acme.test:
+    password: bob
+    subject: oidc|bob
+    name: Bob Member
+    tenant: acme
+    teams: [engineering]
+    roles: [member]
+    groups: [developers]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, SandboxProvider: "docker-demo", DockerGatewayURL: "ws://host.docker.internal:8080/runtime/ws", RuntimeImagePrefix: "shclop-runtime", StaticDir: "web/dist"})
+
+	bob := loginAs(t, server, "bob@acme.test", "bob")
+	forbidden := doJSON(t, server, http.MethodGet, "/api/admin/overview", nil, bob)
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("expected member status %d, got %d", http.StatusForbidden, forbidden.Code)
+	}
+
+	alice := loginAs(t, server, "alice@acme.test", "alice")
+	response := doJSON(t, server, http.MethodGet, "/api/admin/overview", nil, alice)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected admin status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+	assertJSONField(t, response.Body.Bytes(), "identity_provider", "mock-yaml")
+	assertJSONField(t, response.Body.Bytes(), "sandbox_provider", "docker-demo")
+	users := assertJSONArray(t, response.Body.Bytes(), "users")
+	if len(users) != 2 {
+		t.Fatalf("expected 2 users, got %d: %#v", len(users), users)
+	}
+	activity := assertJSONArray(t, response.Body.Bytes(), "activity")
+	if len(activity) == 0 {
+		t.Fatal("expected activity entries")
+	}
+}
+
+func TestAdminOnlyUserCannotUseMemberAgentFlow(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  alice@acme.test:
+    password: alice
+    subject: oidc|alice
+    name: Alice Admin
+    tenant: acme
+    teams: [platform]
+    roles: [admin]
+    groups: [platform-admins]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, StaticDir: "web/dist"})
+	alice := loginAs(t, server, "alice@acme.test", "alice")
+
+	create := doJSON(t, server, http.MethodPost, "/api/agents", map[string]string{"name": "Admin Agent"}, alice)
+	if create.Code != http.StatusForbidden {
+		t.Fatalf("expected admin-only create status %d, got %d", http.StatusForbidden, create.Code)
+	}
+	list := doJSON(t, server, http.MethodGet, "/api/agents", nil, alice)
+	if list.Code != http.StatusForbidden {
+		t.Fatalf("expected admin-only list status %d, got %d", http.StatusForbidden, list.Code)
+	}
+}
+
+func TestActivityLogShowsCurrentUserActions(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+	created := doJSON(t, server, http.MethodPost, "/api/agents", map[string]string{"name": "Logged Agent"}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d", http.StatusCreated, created.Code)
+	}
+	response := doJSON(t, server, http.MethodGet, "/api/activity", nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected activity status %d, got %d", http.StatusOK, response.Code)
+	}
+	activity := assertJSONArray(t, response.Body.Bytes(), "activity")
+	found := false
+	for _, entry := range activity {
+		if entry["type"] == "agent.created" && entry["actor_id"] == "user-admin" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected agent.created activity for user-admin, got %#v", activity)
+	}
+}
+
 func TestAgentsRequireValidBearerToken(t *testing.T) {
 	server := newTestServer()
 
@@ -288,9 +385,14 @@ func newTestServerWithConfig(cfg config.Config) *Server {
 
 func loginAsAdmin(t *testing.T, server *Server) string {
 	t.Helper()
+	return loginAs(t, server, "admin", "admin")
+}
+
+func loginAs(t *testing.T, server *Server, username, password string) string {
+	t.Helper()
 	response := doJSON(t, server, http.MethodPost, "/api/auth/login", map[string]string{
-		"username": "admin",
-		"password": "admin",
+		"username": username,
+		"password": password,
 	}, "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected login status %d, got %d", http.StatusOK, response.Code)
@@ -345,4 +447,25 @@ func assertJSONObject(t *testing.T, body []byte, key string) map[string]any {
 		t.Fatalf("expected %s object, got %#v", key, decoded[key])
 	}
 	return object
+}
+
+func assertJSONArray(t *testing.T, body []byte, key string) []map[string]any {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode json: %v", err)
+	}
+	items, ok := decoded[key].([]any)
+	if !ok {
+		t.Fatalf("expected %s array, got %#v", key, decoded[key])
+	}
+	result := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("expected object in %s array, got %#v", key, item)
+		}
+		result = append(result, object)
+	}
+	return result
 }

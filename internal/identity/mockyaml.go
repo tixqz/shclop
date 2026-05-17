@@ -16,6 +16,16 @@ type MockYAMLProvider struct {
 	users map[string]mockYAMLUser
 }
 
+type MockYAMLUserSummary struct {
+	Email       string   `json:"email"`
+	Subject     string   `json:"subject"`
+	DisplayName string   `json:"display_name"`
+	TenantID    string   `json:"tenant_id"`
+	TeamIDs     []string `json:"team_ids"`
+	Roles       []string `json:"roles"`
+	Groups      []string `json:"groups"`
+}
+
 type mockYAMLConfig struct {
 	Users map[string]mockYAMLUser `yaml:"users"`
 }
@@ -57,6 +67,26 @@ func NewMockYAMLProvider(path string) (*MockYAMLProvider, error) {
 }
 
 func (p *MockYAMLProvider) Name() string { return "mock-yaml" }
+
+func (p *MockYAMLProvider) Users() []MockYAMLUserSummary {
+	users := make([]MockYAMLUserSummary, 0, len(p.users))
+	for username, user := range p.users {
+		subject := user.Subject
+		if subject == "" {
+			subject = "mock-yaml|" + username
+		}
+		users = append(users, MockYAMLUserSummary{
+			Email:       username,
+			Subject:     subject,
+			DisplayName: user.Name,
+			TenantID:    strings.TrimSpace(user.Tenant),
+			TeamIDs:     append([]string(nil), user.Teams...),
+			Roles:       append([]string(nil), user.Roles...),
+			Groups:      append([]string(nil), user.Groups...),
+		})
+	}
+	return users
+}
 
 func (p *MockYAMLProvider) Authenticate(ctx context.Context, request AuthRequest) (Identity, error) {
 	if err := ctx.Err(); err != nil {
