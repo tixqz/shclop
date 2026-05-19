@@ -143,6 +143,8 @@ go run ./cmd/shclop \
 
 Open `http://localhost:8080`, log in as `bob@acme.test/bob`, create an agent, start it, and send a chat task. The backend starts a local runtime container, the runtime connects back to `/runtime/ws`, and browser messages stream through the Agent Gateway.
 
+The UI also exposes global **Agents** and **Skills** tabs as simple list-first catalogs. The Add button opens the create form, and clicking a row opens a detail modal with edit/delete actions. The top-right user menu shows avatar initials, organization metadata, roles, disabled Settings, and Log out.
+
 For identity-provider mapping demos:
 
 ```bash
@@ -182,7 +184,7 @@ Secrets must not be mounted into an agent runtime. A compromised agent should no
 
 For larger installations, shared connector pools are expected. They should still use request-scoped Vault access, exact-path policies, no list permission, short TTLs, and audit metadata containing tenant, integration, grant, action, and request IDs. High-risk tenants can be moved to dedicated connector pools or Vault namespaces.
 
-See [`USER_GUIDE.md`](USER_GUIDE.md) for the member flow and [`ADMIN_GUIDE.md`](ADMIN_GUIDE.md) for the read-only admin area.
+See [`USER_GUIDE.md`](USER_GUIDE.md) for the workspace user flow and [`ADMIN_GUIDE.md`](ADMIN_GUIDE.md) for the read-only admin area.
 
 ## Monitoring
 

@@ -265,6 +265,9 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	if agents == nil {
+		agents = []domain.Agent{}
+	}
 	s.writeJSON(w, http.StatusOK, agents)
 }
 

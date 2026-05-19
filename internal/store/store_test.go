@@ -61,6 +61,45 @@ func TestMemoryStoreCreatesAndListsAgents(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreCreatesAndListsWorkspaces(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+
+	workspace, err := s.CreateWorkspace(ctx, "user-1", "Launch workspace", "Chats and integrations for launch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.ID == "" {
+		t.Fatal("expected workspace ID")
+	}
+	if workspace.OwnerID != "user-1" || workspace.Name != "Launch workspace" || workspace.Description != "Chats and integrations for launch" {
+		t.Fatalf("unexpected workspace: %#v", workspace)
+	}
+	if workspace.CreatedAt.IsZero() || workspace.UpdatedAt.IsZero() {
+		t.Fatalf("expected timestamps: %#v", workspace)
+	}
+
+	if _, err := s.CreateWorkspace(ctx, "user-2", "Other", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	workspaces, err := s.ListWorkspaces(ctx, "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workspaces) != 1 || workspaces[0].ID != workspace.ID {
+		t.Fatalf("expected only user-1 workspace, got %#v", workspaces)
+	}
+
+	fetched, err := s.GetWorkspace(ctx, workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.ID != workspace.ID {
+		t.Fatalf("expected fetched workspace %q, got %#v", workspace.ID, fetched)
+	}
+}
+
 func TestMemoryStoreRespectsCancelledContext(t *testing.T) {
 	s := NewMemory()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -71,5 +110,11 @@ func TestMemoryStoreRespectsCancelledContext(t *testing.T) {
 	}
 	if agents, err := s.ListAgents(ctx, "user-1"); err == nil || agents != nil {
 		t.Fatal("expected list error for cancelled context")
+	}
+	if _, err := s.CreateWorkspace(ctx, "user-1", "Workspace", ""); err == nil {
+		t.Fatal("expected workspace create error for cancelled context")
+	}
+	if workspaces, err := s.ListWorkspaces(ctx, "user-1"); err == nil || workspaces != nil {
+		t.Fatal("expected workspace list error for cancelled context")
 	}
 }

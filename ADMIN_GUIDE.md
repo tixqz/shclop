@@ -1,6 +1,6 @@
 # Shclop admin guide
 
-This guide describes the read-only admin area implemented for the current demo. Admins are separate from normal members: they inspect the platform environment and guardrails, while members manage their own agents.
+This guide describes the read-only admin area implemented for the current demo. An admin is a normal user with additional access to platform-level information. Admin access does not grant ownership over other users’ workspaces, agents, chats, or shared context.
 
 ## Demo account
 
@@ -26,17 +26,21 @@ Alice has role `admin` in tenant `acme` and team `platform`.
 
 The current admin area is read-only. It is meant to document and demo the control-plane boundary before editable admin operations are added.
 
-It shows:
+The UI is organized into tabs:
 
-- active identity provider;
-- configured sandbox provider;
-- runtime image catalog for OpenClaw, NanoClaw, and NemoClaw;
-- users, tenants, teams, roles, and groups from `config/identity.mock.yaml`;
-- application activity log: login, agent creation, agent start, sandbox start, runtime connection, and routed task events.
+- Integrations: Slack, Google Drive, CRM, Zendesk, GitHub, Statuspage, and other connector policy rows.
+- MCP: tool servers, transports, tool counts, scopes, and approval mode.
+- Federations: LDAP, Keycloak/OIDC, header auth, mock YAML, and planned SCIM.
+- Audit logs: user-facing activity rows with time, actor, action, target, severity, and source.
+- Policies: network egress, runtime isolation, approvals, resource limits, workspace size, and secret boundaries.
+- Runtimes: sandbox provider and runtime image catalog.
+- Models: broker/provider routing and credential boundary notes.
+
+The admin overview still uses the mock control-plane data as a read-only catalog rather than a mutable settings page.
 
 ## What admins are allowed to manage later
 
-The admin role should eventually manage platform-level guardrails, not individual user work unless required for support or incident response.
+The admin role should eventually manage platform-level guardrails, not individual workspace content unless that content is explicitly shared through a future workspace membership model.
 
 Planned admin controls:
 
@@ -52,7 +56,7 @@ Planned admin controls:
 
 ## What admins should not do
 
-Admins should not bypass runtime isolation, inject provider secrets into agent runtimes, or turn the Integration Broker into a generic HTTP proxy. Admin controls should set policy and guardrails; agents should still operate through typed, auditable interfaces.
+Admins should not browse or manage other users’ workspaces by default. They also should not bypass runtime isolation, inject provider secrets into agent runtimes, or turn the Integration Broker into a generic HTTP proxy. Admin controls should set platform policy and guardrails; agents should still operate through typed, auditable interfaces.
 
 ## Current limitations
 

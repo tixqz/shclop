@@ -235,6 +235,55 @@ func TestListAgentsReturnsCurrentUsersAgents(t *testing.T) {
 	}
 }
 
+func TestListAgentsReturnsEmptyArrayForNewUser(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	response := doJSON(t, server, http.MethodGet, "/api/agents", nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+	}
+	if got := strings.TrimSpace(response.Body.String()); got != "[]" {
+		t.Fatalf("expected empty JSON array, got %q", got)
+	}
+}
+
+func TestWorkspaceFlowCreatesAndListsCurrentUsersWorkspaces(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	empty := doJSON(t, server, http.MethodGet, "/api/workspaces", nil, token)
+	if empty.Code != http.StatusOK {
+		t.Fatalf("expected empty list status %d, got %d", http.StatusOK, empty.Code)
+	}
+	if got := strings.TrimSpace(empty.Body.String()); got != "[]" {
+		t.Fatalf("expected empty JSON array, got %q", got)
+	}
+
+	created := doJSON(t, server, http.MethodPost, "/api/workspaces", map[string]string{"name": "Launch", "description": "Launch work"}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, created.Code, created.Body.String())
+	}
+	workspaceID := assertJSONField(t, created.Body.Bytes(), "id", "")
+	assertJSONField(t, created.Body.Bytes(), "name", "Launch")
+	assertJSONField(t, created.Body.Bytes(), "description", "Launch work")
+
+	listed := doJSON(t, server, http.MethodGet, "/api/workspaces", nil, token)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listed.Code)
+	}
+	workspaces := assertJSONArray(t, listed.Body.Bytes(), "")
+	if len(workspaces) != 1 || workspaces[0]["id"] != workspaceID {
+		t.Fatalf("expected created workspace in list, got %#v", workspaces)
+	}
+
+	fetched := doJSON(t, server, http.MethodGet, "/api/workspaces/"+workspaceID, nil, token)
+	if fetched.Code != http.StatusOK {
+		t.Fatalf("expected get status %d, got %d", http.StatusOK, fetched.Code)
+	}
+	assertJSONField(t, fetched.Body.Bytes(), "id", workspaceID)
+}
+
 func TestCreateAgentRejectsBadPayload(t *testing.T) {
 	server := newTestServer()
 	token := loginAsAdmin(t, server)
@@ -451,6 +500,13 @@ func assertJSONObject(t *testing.T, body []byte, key string) map[string]any {
 
 func assertJSONArray(t *testing.T, body []byte, key string) []map[string]any {
 	t.Helper()
+	if key == "" {
+		var items []map[string]any
+		if err := json.Unmarshal(body, &items); err != nil {
+			t.Fatalf("decode json array: %v", err)
+		}
+		return items
+	}
 	var decoded map[string]any
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatalf("decode json: %v", err)

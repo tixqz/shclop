@@ -20,6 +20,15 @@ type Agent struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Workspace struct {
+	ID          string    `json:"id"`
+	OwnerID     string    `json:"owner_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 type Message struct {
 	ID        string    `json:"id"`
 	AgentID   string    `json:"agent_id"`
