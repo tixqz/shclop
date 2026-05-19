@@ -25,3 +25,12 @@ users:
     teams: [external]
     roles: [viewer]
     groups: [external-viewers]
+
+  sec@acme.test:
+    password: sec
+    subject: oidc|sec
+    name: Sam Security
+    tenant: acme
+    teams: [security]
+    roles: [security]
+    groups: [security-team]

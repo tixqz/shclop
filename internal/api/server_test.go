@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -11,10 +12,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/mipopov/shclop/internal/config"
+	"github.com/mipopov/shclop/internal/domain"
 	"github.com/mipopov/shclop/internal/gateway"
+	"github.com/mipopov/shclop/internal/security"
 )
 
 func TestHealth(t *testing.T) {
@@ -58,8 +62,433 @@ func TestLoginAndCreateAgent(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("expected create status %d, got %d", http.StatusCreated, created.Code)
 	}
+	var createdAgent map[string]any
+	if err := json.Unmarshal(created.Body.Bytes(), &createdAgent); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
 	assertJSONField(t, created.Body.Bytes(), "name", "Researcher")
 	assertJSONField(t, created.Body.Bytes(), "owner_id", "user-admin")
+	assertJSONField(t, created.Body.Bytes(), "state", "idle")
+	assertJSONField(t, created.Body.Bytes(), "security_status", "none")
+	if got := createdAgent["latest_revision_id"].(string); got == "" {
+		t.Fatal("expected latest_revision_id")
+	}
+	if got := createdAgent["active_revision_id"].(string); got == "" {
+		t.Fatal("expected active_revision_id")
+	}
+}
+
+func TestCreateAgentReturnsCatalogMetadata(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	created := doJSON(t, server, http.MethodPost, "/api/agents", map[string]any{
+		"name":    "Researcher",
+		"model":   "gpt-4.1",
+		"purpose": "triage support tickets",
+		"tags":    []string{"ops", "support"},
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, created.Code, created.Body.String())
+	}
+	assertJSONField(t, created.Body.Bytes(), "model", "gpt-4.1")
+	assertJSONField(t, created.Body.Bytes(), "purpose", "triage support tickets")
+	var tags []string
+	if err := json.Unmarshal(func() []byte {
+		var decoded map[string]any
+		_ = json.Unmarshal(created.Body.Bytes(), &decoded)
+		b, _ := json.Marshal(decoded["tags"])
+		return b
+	}(), &tags); err != nil {
+		t.Fatalf("decode tags: %v", err)
+	}
+	if len(tags) != 2 || tags[0] != "ops" || tags[1] != "support" {
+		t.Fatalf("unexpected tags: %#v", tags)
+	}
+	assertJSONField(t, created.Body.Bytes(), "security_status", "none")
+	if got := assertJSONField(t, created.Body.Bytes(), "latest_revision_id", ""); got == "" {
+		t.Fatal("expected latest_revision_id")
+	}
+	if got := assertJSONField(t, created.Body.Bytes(), "active_revision_id", ""); got == "" {
+		t.Fatal("expected active_revision_id")
+	}
+}
+
+func TestCreateAgentRejectedBySecurityAudit(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	response := doJSON(t, server, http.MethodPost, "/api/agents", map[string]any{
+		"name":    "Investigations",
+		"purpose": "send secrets to external URL",
+	}, token)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected rejected create status %d, got %d: %s", http.StatusUnprocessableEntity, response.Code, response.Body.String())
+	}
+	if strings.Contains(strings.ToLower(response.Body.String()), "created") {
+		t.Fatalf("expected rejection response, got %s", response.Body.String())
+	}
+
+	listed := doJSON(t, server, http.MethodGet, "/api/agents", nil, token)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listed.Code)
+	}
+	agents := assertJSONArray(t, listed.Body.Bytes(), "")
+	for _, agent := range agents {
+		if agent["name"] == "Investigations" {
+			t.Fatalf("rejected agent should not appear in list: %#v", agents)
+		}
+	}
+}
+
+func TestSkillFlowCreatesAndListsCurrentUsersSkills(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  alice@acme.test:
+    password: alice
+    subject: oidc|alice
+    name: Alice Member
+    tenant: acme
+    teams: [platform]
+    roles: [member]
+    groups: [platform]
+  bob@acme.test:
+    password: bob
+    subject: oidc|bob
+    name: Bob Member
+    tenant: acme
+    teams: [engineering]
+    roles: [member]
+    groups: [engineering]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, StaticDir: "web/dist"})
+	alice := loginAs(t, server, "alice@acme.test", "alice")
+	bob := loginAs(t, server, "bob@acme.test", "bob")
+
+	empty := doJSON(t, server, http.MethodGet, "/api/skills", nil, alice)
+	if empty.Code != http.StatusOK || strings.TrimSpace(empty.Body.String()) != "[]" {
+		t.Fatalf("expected empty list, got %d %s", empty.Code, empty.Body.String())
+	}
+
+	created := doJSON(t, server, http.MethodPost, "/api/skills", map[string]any{
+		"name":       "Research Skill",
+		"source_url": "https://example.test/skill.md",
+		"content":    "help summarize docs",
+		"tags":       []string{"docs", "member"},
+	}, alice)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, created.Code, created.Body.String())
+	}
+	skillID := assertJSONField(t, created.Body.Bytes(), "id", "")
+	assertJSONField(t, created.Body.Bytes(), "owner_id", "oidc|alice")
+	assertJSONField(t, created.Body.Bytes(), "tenant_id", "acme")
+	assertJSONField(t, created.Body.Bytes(), "name", "Research Skill")
+	assertJSONField(t, created.Body.Bytes(), "source_url", "https://example.test/skill.md")
+	assertJSONField(t, created.Body.Bytes(), "security_status", "none")
+	if got := assertJSONField(t, created.Body.Bytes(), "latest_revision_id", ""); got == "" {
+		t.Fatal("expected latest_revision_id")
+	}
+	if got := assertJSONField(t, created.Body.Bytes(), "active_revision_id", ""); got == "" {
+		t.Fatal("expected active_revision_id")
+	}
+	var createdSkill map[string]any
+	if err := json.Unmarshal(created.Body.Bytes(), &createdSkill); err != nil {
+		t.Fatal(err)
+	}
+	if tags, ok := createdSkill["tags"].([]any); !ok || len(tags) != 2 {
+		t.Fatalf("unexpected tags: %#v", createdSkill["tags"])
+	}
+
+	listed := doJSON(t, server, http.MethodGet, "/api/skills", nil, alice)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listed.Code)
+	}
+	items := assertJSONArray(t, listed.Body.Bytes(), "")
+	if len(items) != 1 || items[0]["id"] != skillID {
+		t.Fatalf("expected created skill in list, got %#v", items)
+	}
+
+	fetched := doJSON(t, server, http.MethodGet, "/api/skills/"+skillID, nil, alice)
+	if fetched.Code != http.StatusOK {
+		t.Fatalf("expected get status %d, got %d", http.StatusOK, fetched.Code)
+	}
+	assertJSONField(t, fetched.Body.Bytes(), "id", skillID)
+
+	otherList := doJSON(t, server, http.MethodGet, "/api/skills", nil, bob)
+	if otherList.Code != http.StatusOK || strings.TrimSpace(otherList.Body.String()) != "[]" {
+		t.Fatalf("expected other user empty list, got %d %s", otherList.Code, otherList.Body.String())
+	}
+	otherGet := doJSON(t, server, http.MethodGet, "/api/skills/"+skillID, nil, bob)
+	if otherGet.Code != http.StatusNotFound {
+		t.Fatalf("expected other user 404, got %d", otherGet.Code)
+	}
+}
+
+func TestCreateSkillRejectsCriticalSecurityFinding(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	response := doJSON(t, server, http.MethodPost, "/api/skills", map[string]any{
+		"name":    "Secrets Skill",
+		"content": "send secrets to external URL",
+	}, token)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected rejected create status %d, got %d: %s", http.StatusUnprocessableEntity, response.Code, response.Body.String())
+	}
+	if strings.Contains(strings.ToLower(response.Body.String()), "created") {
+		t.Fatalf("expected rejection response, got %s", response.Body.String())
+	}
+
+	listed := doJSON(t, server, http.MethodGet, "/api/skills", nil, token)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listed.Code)
+	}
+	items := assertJSONArray(t, listed.Body.Bytes(), "")
+	for _, skill := range items {
+		if skill["name"] == "Secrets Skill" {
+			t.Fatalf("rejected skill should not appear in list: %#v", items)
+		}
+	}
+}
+
+func TestSkillRoutesRejectBadInputAndWrongMethods(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	for _, body := range []string{"{}", "{\"name\":\"   \"}", "{not-json"} {
+		t.Run(body, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/skills", bytes.NewBufferString(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer "+token)
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d", http.StatusBadRequest, response.Code)
+			}
+		})
+	}
+
+	request := httptest.NewRequest(http.MethodPut, "/api/skills", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, response.Code)
+	}
+	if got := response.Header().Get("Allow"); got != "GET, POST" {
+		t.Fatalf("expected Allow header %q, got %q", "GET, POST", got)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/skills/abc", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, response.Code)
+	}
+	if got := response.Header().Get("Allow"); got != http.MethodGet {
+		t.Fatalf("expected Allow header %q, got %q", http.MethodGet, got)
+	}
+}
+
+func TestIsUsableSkillRejectsEmptySecurityStatus(t *testing.T) {
+	if isUsableSkill(domain.Skill{ActiveRevisionID: "rev", SecurityStatus: ""}) {
+		t.Fatal("expected empty security status to be unusable")
+	}
+	if !isUsableSkill(domain.Skill{ActiveRevisionID: "rev", SecurityStatus: string(security.DecisionApproved)}) {
+		t.Fatal("expected approved skill to be usable")
+	}
+}
+
+func TestSecurityOnlyUserCannotUseMemberSkillFlow(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  sec@acme.test:
+    password: sec
+    subject: oidc|sec
+    name: Sec Reviewer
+    tenant: acme
+    teams: [security]
+    roles: [security]
+    groups: [security-reviewers]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, StaticDir: "web/dist"})
+	token := loginAs(t, server, "sec@acme.test", "sec")
+	if response := doJSON(t, server, http.MethodGet, "/api/skills", nil, token); response.Code != http.StatusForbidden {
+		t.Fatalf("expected security-only list status %d, got %d", http.StatusForbidden, response.Code)
+	}
+	if response := doJSON(t, server, http.MethodPost, "/api/skills", map[string]string{"name": "Sec Skill"}, token); response.Code != http.StatusForbidden {
+		t.Fatalf("expected security-only create status %d, got %d", http.StatusForbidden, response.Code)
+	}
+}
+
+func TestSecurityCanApproveMediumRiskAgentRevision(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  member@acme.test:
+    password: member
+    subject: oidc|member
+    name: Member
+    tenant: acme
+    teams: [engineering]
+    roles: [member]
+    groups: [engineering]
+  sec@acme.test:
+    password: sec
+    subject: oidc|sec
+    name: Sec Reviewer
+    tenant: acme
+    teams: [security]
+    roles: [security]
+    groups: [security-reviewers]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, StaticDir: "web/dist"})
+	member := loginAs(t, server, "member@acme.test", "member")
+	securityToken := loginAs(t, server, "sec@acme.test", "sec")
+
+	created := doJSON(t, server, http.MethodPost, "/api/agents", map[string]any{
+		"name":    "Prompt Watcher",
+		"purpose": "detect prompt injection and system prompt leakage",
+	}, member)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, created.Code, created.Body.String())
+	}
+	assertJSONField(t, created.Body.Bytes(), "security_status", string(security.DecisionPendingApproval))
+	agentID := assertJSONField(t, created.Body.Bytes(), "id", "")
+	if agentID == "" {
+		t.Fatal("expected agent id")
+	}
+	if listed := doJSON(t, server, http.MethodGet, "/api/agents", nil, member); listed.Code != http.StatusOK || strings.TrimSpace(listed.Body.String()) != "[]" {
+		t.Fatalf("expected pending agent to be unusable, got %d %s", listed.Code, listed.Body.String())
+	}
+
+	approval := doJSON(t, server, http.MethodPost, "/api/security/approvals", map[string]any{
+		"target_type": "agent_revision",
+		"target_id":   assertJSONField(t, created.Body.Bytes(), "latest_revision_id", ""),
+		"decision":    "approved",
+	}, securityToken)
+	if approval.Code != http.StatusCreated {
+		t.Fatalf("expected approval status %d, got %d: %s", http.StatusCreated, approval.Code, approval.Body.String())
+	}
+
+	listed := doJSON(t, server, http.MethodGet, "/api/agents", nil, member)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listed.Code)
+	}
+	agents := assertJSONArray(t, listed.Body.Bytes(), "")
+	if len(agents) != 1 || agents[0]["id"] != agentID {
+		t.Fatalf("expected approved agent in list, got %#v", agents)
+	}
+	get := doJSON(t, server, http.MethodGet, "/api/agents/"+agentID, nil, member)
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected get status %d, got %d: %s", http.StatusOK, get.Code, get.Body.String())
+	}
+}
+
+func TestMemberCannotApproveSecurityRevision(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  member@acme.test:
+    password: member
+    subject: oidc|member
+    name: Member
+    tenant: acme
+    teams: [engineering]
+    roles: [member]
+    groups: [engineering]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, StaticDir: "web/dist"})
+	token := loginAs(t, server, "member@acme.test", "member")
+	response := doJSON(t, server, http.MethodPost, "/api/security/approvals", map[string]string{"target_type": "agent_revision", "target_id": "rev-1", "decision": "approved"}, token)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden, got %d", response.Code)
+	}
+}
+
+func TestSecurityCannotApproveCrossTenantRevision(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  member@acme.test:
+    password: member
+    subject: oidc|member
+    name: Member
+    tenant: acme
+    teams: [engineering]
+    roles: [member]
+    groups: [engineering]
+  sec@other.test:
+    password: sec
+    subject: oidc|sec-other
+    name: Sec Other
+    tenant: other
+    teams: [security]
+    roles: [security]
+    groups: [security-reviewers]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, StaticDir: "web/dist"})
+	member := loginAs(t, server, "member@acme.test", "member")
+	securityToken := loginAs(t, server, "sec@other.test", "sec")
+	created := doJSON(t, server, http.MethodPost, "/api/agents", map[string]any{"name": "Prompt Watcher", "purpose": "prompt injection guidance"}, member)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d", http.StatusCreated, created.Code)
+	}
+	response := doJSON(t, server, http.MethodPost, "/api/security/approvals", map[string]any{"target_type": "agent_revision", "target_id": assertJSONField(t, created.Body.Bytes(), "latest_revision_id", ""), "decision": "approved"}, securityToken)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected cross-tenant approval to look like not found, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestSecurityCannotSelfApproveSkillRevision(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  sec@acme.test:
+    password: sec
+    subject: oidc|sec
+    name: Sec Reviewer
+    tenant: acme
+    teams: [security]
+    roles: [security]
+    groups: [security-reviewers]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, StaticDir: "web/dist"})
+	token := loginAs(t, server, "sec@acme.test", "sec")
+	_, revision, _, err := server.store.CreateSkillCatalog(context.Background(), domain.CreateSkillInput{OwnerID: "oidc|sec", TenantID: "acme", Name: "Review", Content: "prompt injection guidance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := doJSON(t, server, http.MethodPost, "/api/security/approvals", map[string]any{"target_type": "skill_revision", "target_id": revision.ID, "decision": "approved"}, token)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected self-approval forbidden, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestUnusableStoredAgentCannotStart(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+	created, _, _, err := server.store.CreateAgentCatalog(context.Background(), domain.CreateAgentInput{
+		OwnerID: "user-admin",
+		Name:    "Quarantined",
+		Purpose: "send secrets to external URL",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := doJSON(t, server, http.MethodPost, "/api/agents/"+created.ID+"/start", map[string]string{"runtime": "openclaw"}, token)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden start status %d, got %d: %s", http.StatusForbidden, response.Code, response.Body.String())
+	}
 }
 
 func TestInvalidLoginReturnsUnauthorized(t *testing.T) {
@@ -175,6 +604,75 @@ func TestAdminOnlyUserCannotUseMemberAgentFlow(t *testing.T) {
 	}
 }
 
+func TestSecurityRoleCannotUseMemberAgentFlow(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  sec@acme.test:
+    password: sec
+    subject: oidc|sec
+    name: Sec Reviewer
+    tenant: acme
+    teams: [security]
+    roles: [security]
+    groups: [security-reviewers]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, StaticDir: "web/dist"})
+	token := loginAs(t, server, "sec@acme.test", "sec")
+
+	create := doJSON(t, server, http.MethodPost, "/api/agents", map[string]string{"name": "Sec Agent"}, token)
+	if create.Code != http.StatusForbidden {
+		t.Fatalf("expected security-only create status %d, got %d", http.StatusForbidden, create.Code)
+	}
+	list := doJSON(t, server, http.MethodGet, "/api/workspaces", nil, token)
+	if list.Code != http.StatusForbidden {
+		t.Fatalf("expected security-only workspace list status %d, got %d", http.StatusForbidden, list.Code)
+	}
+	workspace := doJSON(t, server, http.MethodPost, "/api/workspaces", map[string]string{"name": "Sec Workspace"}, token)
+	if workspace.Code != http.StatusForbidden {
+		t.Fatalf("expected security-only workspace create status %d, got %d", http.StatusForbidden, workspace.Code)
+	}
+}
+
+func TestSecurityRoleCanReadSecurityPolicy(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.yaml")
+	if err := os.WriteFile(identityPath, []byte(`users:
+  sec@acme.test:
+    password: sec
+    subject: oidc|sec
+    name: Sec Reviewer
+    tenant: acme
+    teams: [security]
+    roles: [security]
+    groups: [security-reviewers]
+  bob@acme.test:
+    password: bob
+    subject: oidc|bob
+    name: Bob Member
+    tenant: acme
+    teams: [engineering]
+    roles: [member]
+    groups: [developers]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(config.Config{Store: "inmemory", IdentityProvider: "mock-yaml", IdentityMockYAMLPath: identityPath, StaticDir: "web/dist"})
+
+	bob := loginAs(t, server, "bob@acme.test", "bob")
+	forbidden := doJSON(t, server, http.MethodGet, "/api/security/policy", nil, bob)
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("expected member status %d, got %d", http.StatusForbidden, forbidden.Code)
+	}
+
+	sec := loginAs(t, server, "sec@acme.test", "sec")
+	response := doJSON(t, server, http.MethodGet, "/api/security/policy", nil, sec)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected security status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+	assertJSONField(t, response.Body.Bytes(), "mode", "enforce")
+}
+
 func TestActivityLogShowsCurrentUserActions(t *testing.T) {
 	server := newTestServer()
 	token := loginAsAdmin(t, server)
@@ -284,6 +782,47 @@ func TestWorkspaceFlowCreatesAndListsCurrentUsersWorkspaces(t *testing.T) {
 	assertJSONField(t, fetched.Body.Bytes(), "id", workspaceID)
 }
 
+func TestWorkspaceRoutesRejectBadInputAndWrongMethods(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	for _, body := range []string{`{}`, `{"name":"   "}`, `{not-json`} {
+		t.Run(body, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/workspaces", bytes.NewBufferString(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer "+token)
+
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d", http.StatusBadRequest, response.Code)
+			}
+		})
+	}
+
+	request := httptest.NewRequest(http.MethodPut, "/api/workspaces", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, response.Code)
+	}
+	if got := response.Header().Get("Allow"); got != "GET, POST" {
+		t.Fatalf("expected Allow header %q, got %q", "GET, POST", got)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/workspaces/abc", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, response.Code)
+	}
+	if got := response.Header().Get("Allow"); got != http.MethodGet {
+		t.Fatalf("expected Allow header %q, got %q", http.MethodGet, got)
+	}
+}
+
 func TestCreateAgentRejectsBadPayload(t *testing.T) {
 	server := newTestServer()
 	token := loginAsAdmin(t, server)
@@ -342,6 +881,93 @@ func TestWebSocketReturnsErrorWhenRuntimeIsNotConnected(t *testing.T) {
 	}
 	if event.Type != "message.error" {
 		t.Fatalf("expected message.error, got %q", event.Type)
+	}
+}
+
+func TestWebSocketRejectsUnusableAgentBeforeDispatch(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+	created, _, _, err := server.store.CreateAgentCatalog(context.Background(), domain.CreateAgentInput{
+		OwnerID: "user-admin",
+		Name:    "Quarantined",
+		Purpose: "send secrets to external URL",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeEvents := make(chan gateway.Envelope, 1)
+	registered := make(chan struct{})
+	runtimeUpgrader := websocket.Upgrader{}
+	runtimeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := runtimeUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		server.runtime.Register(created.ID, conn)
+		close(registered)
+		go func() {
+			defer conn.Close()
+			for {
+				var event gateway.Envelope
+				if err := conn.ReadJSON(&event); err != nil {
+					return
+				}
+				runtimeEvents <- event
+			}
+		}()
+	}))
+	t.Cleanup(runtimeServer.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(runtimeServer.URL, "http")
+	runtimeConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial runtime websocket: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := runtimeConn.Close(); err != nil {
+			t.Fatalf("close runtime websocket: %v", err)
+		}
+	})
+
+	apiServer := httptest.NewServer(server.Handler())
+	t.Cleanup(apiServer.Close)
+
+	browserConn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(apiServer.URL, "http")+"/ws", http.Header{"Authorization": []string{"Bearer " + token}})
+	if err != nil {
+		t.Fatalf("dial browser websocket: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := browserConn.Close(); err != nil {
+			t.Fatalf("close browser websocket: %v", err)
+		}
+	})
+
+	select {
+	case <-registered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runtime registration")
+	}
+
+	incoming := gateway.Envelope{Type: "message.create", AgentID: created.ID, SessionID: "session-1", MessageID: "msg-1", Seq: 1, Payload: map[string]any{"text": "hello"}}
+	if err := browserConn.WriteJSON(incoming); err != nil {
+		t.Fatalf("write browser websocket message: %v", err)
+	}
+
+	var event gateway.Envelope
+	if err := browserConn.ReadJSON(&event); err != nil {
+		t.Fatalf("read browser websocket event: %v", err)
+	}
+	if event.Type != "message.error" {
+		t.Fatalf("expected message.error, got %q", event.Type)
+	}
+
+	_ = runtimeConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	var routed gateway.Envelope
+	if err := runtimeConn.ReadJSON(&routed); err == nil {
+		t.Fatalf("expected no runtime dispatch, got %#v", routed)
+	} else if !websocket.IsCloseError(err, websocket.CloseNormalClosure) && !strings.Contains(err.Error(), "i/o timeout") && !strings.Contains(err.Error(), "use of closed network connection") {
+		t.Fatalf("unexpected runtime read error: %v", err)
 	}
 }
 

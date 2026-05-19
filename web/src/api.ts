@@ -16,9 +16,51 @@ export type User = {
 export type Agent = {
   id: string;
   owner_id: string;
+  tenant_id?: string;
   name: string;
+  model?: string;
+  purpose?: string;
+  tags?: string[];
   state: string;
+  latest_revision_id?: string;
+  active_revision_id?: string;
+  security_status?: string;
   created_at: string;
+};
+
+export type Workspace = {
+  id: string;
+  owner_id: string;
+  name: string;
+  description?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Skill = {
+  id: string;
+  owner_id: string;
+  tenant_id?: string;
+  name: string;
+  source_url?: string;
+  tags?: string[];
+  latest_revision_id: string;
+  active_revision_id: string;
+  security_status?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateSkillInput = {
+  name: string;
+  source_url?: string;
+  content?: string;
+  tags?: string[];
+};
+
+export type SecurityPolicy = {
+  mode: string;
+  version: number;
 };
 
 export type StartAgentResponse = {
@@ -97,6 +139,44 @@ export async function listAgents(token: string): Promise<Agent[]> {
     throw new Error(`List agents failed (${response.status})`);
   }
   return (await response.json()) as Agent[];
+}
+
+export async function listWorkspaces(token: string): Promise<Workspace[]> {
+  const response = await fetch('/api/workspaces', { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(`List workspaces failed (${response.status})`);
+  return (await response.json()) as Workspace[];
+}
+
+export async function createWorkspace(token: string, name: string, description?: string): Promise<Workspace> {
+  const response = await fetch('/api/workspaces', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description }),
+  });
+  if (!response.ok) throw new Error(`Create workspace failed (${response.status})`);
+  return (await response.json()) as Workspace;
+}
+
+export async function listSkills(token: string): Promise<Skill[]> {
+  const response = await fetch('/api/skills', { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(`List skills failed (${response.status})`);
+  return (await response.json()) as Skill[];
+}
+
+export async function createSkill(token: string, input: CreateSkillInput): Promise<Skill> {
+  const response = await fetch('/api/skills', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(`Create skill failed (${response.status})`);
+  return (await response.json()) as Skill;
+}
+
+export async function getSecurityPolicy(token: string): Promise<SecurityPolicy> {
+  const response = await fetch('/api/security/policy', { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(`Get security policy failed (${response.status})`);
+  return (await response.json()) as SecurityPolicy;
 }
 
 export async function createAgent(token: string, name: string): Promise<Agent> {

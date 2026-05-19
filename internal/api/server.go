@@ -22,6 +22,7 @@ import (
 	"github.com/mipopov/shclop/internal/gateway"
 	"github.com/mipopov/shclop/internal/identity"
 	"github.com/mipopov/shclop/internal/sandbox"
+	"github.com/mipopov/shclop/internal/security"
 	"github.com/mipopov/shclop/internal/store"
 )
 
@@ -135,6 +136,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/auth/login", s.handleLogin)
 	mux.HandleFunc("/api/activity", s.handleActivity)
 	mux.HandleFunc("/api/admin/overview", s.handleAdminOverview)
+	mux.HandleFunc("/api/security/policy", s.handleSecurityPolicy)
+	mux.HandleFunc("/api/security/approvals", s.handleSecurityApprovals)
+	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
+	mux.HandleFunc("/api/workspaces/", s.handleWorkspace)
+	mux.HandleFunc("/api/skills", s.handleSkills)
+	mux.HandleFunc("/api/skills/", s.handleSkill)
 	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/api/agents/", s.handleAgent)
 	mux.HandleFunc("/ws", s.handleWebSocket)
@@ -220,17 +227,46 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListSkills(w, r)
+	case http.MethodPost:
+		s.handleCreateSkill(w, r)
+	default:
+		methodNotAllowed(w, "GET, POST")
+	}
+}
+
+func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/skills/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 1 && parts[0] != "" {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w, http.MethodGet)
+			return
+		}
+		s.handleGetSkill(w, r, parts[0])
+		return
+	}
+	http.NotFound(w, r)
+}
+
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
 	}
-	if !requireRole(w, user, "member") {
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
 	var request struct {
-		Name string `json:"name"`
+		Name    string   `json:"name"`
+		Model   string   `json:"model"`
+		Purpose string   `json:"purpose"`
+		Tags    []string `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -242,13 +278,115 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agent, err := s.store.CreateAgent(r.Context(), user.ID, name)
+	agent, revision, audit, err := s.store.CreateAgentCatalog(r.Context(), domain.CreateAgentInput{
+		OwnerID:  user.ID,
+		TenantID: user.TenantID,
+		Name:     name,
+		Model:    strings.TrimSpace(request.Model),
+		Purpose:  strings.TrimSpace(request.Purpose),
+		Tags:     request.Tags,
+	})
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
+	_ = revision
+	if security.Decision(audit.Decision) == security.DecisionRejected {
+		s.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "agent rejected by security audit"})
+		return
+	}
 	s.recordActivity("agent.created", user.ID, agent.ID, "agent created", map[string]any{"name": agent.Name})
 	s.writeJSON(w, http.StatusCreated, agent)
+}
+
+func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	skills, err := s.store.ListSkills(r.Context(), user.ID)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	skills = filterUsableSkills(skills)
+	if skills == nil {
+		skills = []domain.Skill{}
+	}
+	s.writeJSON(w, http.StatusOK, skills)
+}
+
+func (s *Server) handleCreateSkill(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var request struct {
+		Name      string   `json:"name"`
+		SourceURL string   `json:"source_url"`
+		Content   string   `json:"content"`
+		Tags      []string `json:"tags"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(request.Name)
+	if name == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	skill, _, audit, err := s.store.CreateSkillCatalog(r.Context(), domain.CreateSkillInput{
+		OwnerID:   user.ID,
+		TenantID:  user.TenantID,
+		Name:      name,
+		Content:   strings.TrimSpace(request.Content),
+		Tags:      request.Tags,
+		Source:    "api",
+		SourceURL: strings.TrimSpace(request.SourceURL),
+	})
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if security.Decision(audit.Decision) == security.DecisionRejected {
+		s.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "skill rejected by security audit"})
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, skill)
+}
+
+func (s *Server) handleGetSkill(w http.ResponseWriter, r *http.Request, skillID string) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	skill, err := s.store.GetSkill(r.Context(), skillID)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if skill.OwnerID != user.ID || !isUsableSkill(skill) {
+		http.NotFound(w, r)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, skill)
 }
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +394,8 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !requireRole(w, user, "member") {
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -265,6 +404,7 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	agents = filterUsableAgents(agents)
 	if agents == nil {
 		agents = []domain.Agent{}
 	}
@@ -276,11 +416,16 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request, agentID 
 	if !ok {
 		return
 	}
-	if !requireRole(w, user, "member") {
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	agent, ok := s.requireOwnedAgent(w, r, user.ID, agentID)
 	if !ok {
+		return
+	}
+	if !isUsableAgent(agent) {
+		http.NotFound(w, r)
 		return
 	}
 	s.writeJSON(w, http.StatusOK, agent)
@@ -291,10 +436,16 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 	if !ok {
 		return
 	}
-	if !requireRole(w, user, "member") {
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if _, ok := s.requireOwnedAgent(w, r, user.ID, agentID); !ok {
+	agent, ok := s.requireOwnedAgent(w, r, user.ID, agentID)
+	if !ok {
+		return
+	}
+	if !isUsableAgent(agent) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	var request struct {
@@ -312,7 +463,7 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 	s.tokenMu.Lock()
 	s.tokens[agentID] = secret
 	s.tokenMu.Unlock()
-	agent, err := s.store.UpdateAgentState(r.Context(), agentID, "starting")
+	agent, err = s.store.UpdateAgentState(r.Context(), agentID, "starting")
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -351,6 +502,56 @@ func (s *Server) requireOwnedAgent(w http.ResponseWriter, r *http.Request, owner
 		return domain.Agent{}, false
 	}
 	return agent, true
+}
+
+func filterUsableAgents(agents []domain.Agent) []domain.Agent {
+	if len(agents) == 0 {
+		return agents
+	}
+	out := make([]domain.Agent, 0, len(agents))
+	for _, agent := range agents {
+		if isUsableAgent(agent) {
+			out = append(out, agent)
+		}
+	}
+	return out
+}
+
+func filterUsableSkills(skills []domain.Skill) []domain.Skill {
+	if len(skills) == 0 {
+		return skills
+	}
+	out := make([]domain.Skill, 0, len(skills))
+	for _, skill := range skills {
+		if isUsableSkill(skill) {
+			out = append(out, skill)
+		}
+	}
+	return out
+}
+
+func isUsableAgent(agent domain.Agent) bool {
+	if strings.TrimSpace(agent.ActiveRevisionID) == "" {
+		return false
+	}
+	switch strings.TrimSpace(agent.SecurityStatus) {
+	case string(security.RiskNone), string(security.RiskLow), string(security.DecisionApproved), string(security.DecisionApprovedWithWarnings), string(security.DecisionWarnOnlyAllowed):
+		return true
+	default:
+		return false
+	}
+}
+
+func isUsableSkill(skill domain.Skill) bool {
+	if strings.TrimSpace(skill.ActiveRevisionID) == "" {
+		return false
+	}
+	switch strings.TrimSpace(skill.SecurityStatus) {
+	case string(security.RiskNone), string(security.RiskLow), string(security.DecisionApproved), string(security.DecisionApprovedWithWarnings), string(security.DecisionWarnOnlyAllowed):
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (domain.User, bool) {
@@ -397,7 +598,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !requireRole(w, user, "member") {
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -417,6 +619,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		return
+	}
+	if !isUsableAgent(agent) {
+		_ = conn.WriteJSON(gateway.Envelope{Type: "message.error", AgentID: incoming.AgentID, SessionID: incoming.SessionID, MessageID: incoming.MessageID, Payload: map[string]any{"text": "agent not available"}})
 		return
 	}
 	incoming.Type = "task.run"
@@ -482,6 +688,185 @@ func (s *Server) handleRuntimeWebSocket(w http.ResponseWriter, r *http.Request) 
 		}
 		s.runtime.Dispatch(hello.AgentID, conn, event)
 	}
+}
+
+func (s *Server) handleSecurityPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !canReadSecurityPolicy(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"mode":    "enforce",
+		"version": 1,
+	})
+}
+
+func (s *Server) handleSecurityApprovals(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !canApproveSecurity(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var request struct {
+		TargetType string `json:"target_type"`
+		TargetID   string `json:"target_id"`
+		Decision   string `json:"decision"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	request.TargetType = strings.TrimSpace(request.TargetType)
+	request.TargetID = strings.TrimSpace(request.TargetID)
+	request.Decision = strings.TrimSpace(request.Decision)
+	if request.TargetType != "agent_revision" && request.TargetType != "skill_revision" || request.TargetID == "" || request.Decision != string(security.DecisionApproved) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	approval, agent, skill, err := s.store.ApproveRevision(r.Context(), store.ApprovalInput{ActorID: user.ID, ActorTenantID: user.TenantID, TargetType: request.TargetType, TargetID: request.TargetID, Decision: request.Decision})
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, store.ErrForbidden) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if errors.Is(err, store.ErrInvalidInput) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		http.Error(w, "conflict", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	response := map[string]any{"approval": approval}
+	if agent.ID != "" {
+		response["agent"] = agent
+	}
+	if skill.ID != "" {
+		response["skill"] = skill
+	}
+	s.writeJSON(w, http.StatusCreated, response)
+}
+
+func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListWorkspaces(w, r)
+	case http.MethodPost:
+		s.handleCreateWorkspace(w, r)
+	default:
+		methodNotAllowed(w, "GET, POST")
+	}
+}
+
+func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/workspaces/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 1 && parts[0] != "" {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w, http.MethodGet)
+			return
+		}
+		s.handleGetWorkspace(w, r, parts[0])
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	workspaces, err := s.store.ListWorkspaces(r.Context(), user.ID)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if workspaces == nil {
+		workspaces = []domain.Workspace{}
+	}
+	s.writeJSON(w, http.StatusOK, workspaces)
+}
+
+func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var request struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(request.Name)
+	if name == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	workspace, err := s.store.CreateWorkspace(r.Context(), user.ID, name, request.Description)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, workspace)
+}
+
+func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request, workspaceID string) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !canUseMemberFeatures(user) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	workspace, err := s.store.GetWorkspace(r.Context(), workspaceID)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if workspace.OwnerID != user.ID {
+		http.NotFound(w, r)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, workspace)
 }
 
 func (s *Server) validRuntimeToken(agentID, secret string) bool {
@@ -630,6 +1015,18 @@ func hasRole(user domain.User, role string) bool {
 		}
 	}
 	return false
+}
+
+func canUseMemberFeatures(user domain.User) bool {
+	return hasRole(user, "member")
+}
+
+func canReadSecurityPolicy(user domain.User) bool {
+	return hasRole(user, "security") || hasRole(user, "admin")
+}
+
+func canApproveSecurity(user domain.User) bool {
+	return hasRole(user, "security")
 }
 
 func requireRole(w http.ResponseWriter, user domain.User, role string) bool {
