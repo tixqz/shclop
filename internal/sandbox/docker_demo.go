@@ -92,14 +92,14 @@ func (p DockerDemoProvider) Stop(ctx context.Context, agentID string) error {
 func normalizeRuntime(runtime string) string {
 	runtime = strings.TrimSpace(strings.ToLower(runtime))
 	if runtime == "" {
-		return "openclaw"
+		return "nanoclaw"
 	}
 	return runtime
 }
 
 func isKnownRuntime(runtime string) bool {
 	switch runtime {
-	case "openclaw", "nanoclaw", "nemoclaw":
+	case "openclaw", "nanoclaw":
 		return true
 	default:
 		return false

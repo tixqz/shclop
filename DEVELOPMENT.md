@@ -98,7 +98,7 @@ go run ./cmd/shclop-runtime \
   --gateway ws://localhost:8080/runtime/ws \
   --agent-id <agent-id> \
   --token <runtime-token> \
-  --runtime openclaw
+  --runtime nanoclaw
 ```
 
 Inside a runtime image the same process is configured through environment variables:
@@ -107,7 +107,7 @@ Inside a runtime image the same process is configured through environment variab
 SHCLOP_GATEWAY_URL=ws://shclop-backend:8080/runtime/ws
 SHCLOP_AGENT_ID=<agent-id>
 SHCLOP_RUNTIME_TOKEN=<runtime-token>
-SHCLOP_AGENT_FLAVOR=openclaw
+SHCLOP_AGENT_FLAVOR=nanoclaw
 ```
 
 ## Tests and checks

@@ -28,7 +28,6 @@ agentRuntime:
   runtimeClassName: kata
   images:
     nanoclaw: shclop-runtime-nanoclaw:latest
-    nemoclaw: shclop-runtime-nemoclaw:latest
     openclaw: shclop-runtime-openclaw:latest
 
 dependencies:

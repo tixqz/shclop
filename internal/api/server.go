@@ -453,7 +453,7 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 	}
 	_ = json.NewDecoder(r.Body).Decode(&request)
 	if strings.TrimSpace(request.Runtime) == "" {
-		request.Runtime = "openclaw"
+		request.Runtime = "nanoclaw"
 	}
 	secret, err := randomSecret()
 	if err != nil {
@@ -957,7 +957,6 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 		"runtime_images": map[string]string{
 			"openclaw": s.cfg.RuntimeImagePrefix + "-openclaw:latest",
 			"nanoclaw": s.cfg.RuntimeImagePrefix + "-nanoclaw:latest",
-			"nemoclaw": s.cfg.RuntimeImagePrefix + "-nemoclaw:latest",
 		},
 		"users":    s.mockIdentityUsers(),
 		"activity": s.activitySnapshot(),

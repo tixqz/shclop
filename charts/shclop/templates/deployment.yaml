@@ -52,8 +52,6 @@ spec:
               value: {{ .Values.agentRuntime.runtimeClassName | quote }}
             - name: SHCLOP_RUNTIME_IMAGE_NANOCLAW
               value: {{ .Values.agentRuntime.images.nanoclaw | quote }}
-            - name: SHCLOP_RUNTIME_IMAGE_NEMOCLAW
-              value: {{ .Values.agentRuntime.images.nemoclaw | quote }}
             - name: SHCLOP_RUNTIME_IMAGE_OPENCLAW
               value: {{ .Values.agentRuntime.images.openclaw | quote }}
           ports:

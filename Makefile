@@ -24,7 +24,6 @@ docker-build:
 
 runtime-images:
 	docker build -f runtime/nanoclaw/Dockerfile -t $(RUNTIME_IMAGE_PREFIX)-nanoclaw:latest .
-	docker build -f runtime/nemoclaw/Dockerfile -t $(RUNTIME_IMAGE_PREFIX)-nemoclaw:latest .
 	docker build -f runtime/openclaw/Dockerfile -t $(RUNTIME_IMAGE_PREFIX)-openclaw:latest .
 
 helm-template:

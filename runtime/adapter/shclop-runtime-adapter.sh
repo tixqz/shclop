@@ -19,9 +19,6 @@ case "${SHCLOP_AGENT_FLAVOR:-}" in
   nanoclaw)
     exec nano-claw --help
     ;;
-  nemoclaw)
-    exec nemoclaw --help
-    ;;
   openclaw)
     exec openclaw --help
     ;;

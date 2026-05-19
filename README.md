@@ -124,6 +124,10 @@ Build runtime images for local/demo agents:
 make runtime-images
 ```
 
+**Runtime flavor for tests:** `nanoclaw` is the default. All test commands, demos, and debugging examples that accept `--runtime` should use `nanoclaw` unless explicitly testing another flavor.
+
+`nemoclaw` is removed for now — it will be added back later when its NVIDIA-based installer and runtime dependencies are reviewed.
+
 Detailed development, testing, and UI workflow notes live in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 
 ## Local functional demo
@@ -235,7 +239,7 @@ This repository currently contains the foundation slice:
 - Dockerfile for a single backend+UI image.
 - Helm chart skeleton for the backend service, Postgres DSN wiring, identity settings, sandbox settings, and runtime image settings.
 - Bootstrap script skeleton with local default and explicit `--remote user@host` execution.
-- Runtime image skeletons for NanoClaw, NemoClaw, and OpenClaw using their official install paths, plus a demo runtime process that connects to the Shclop runtime WebSocket and streams task events. The `docker-demo` sandbox provider can launch those images through a local Docker daemon for single-machine demos.
+- Runtime image skeletons for NanoClaw and OpenClaw using their official install paths, plus a demo runtime process that connects to the Shclop runtime WebSocket and streams task events. The `docker-demo` sandbox provider can launch those images through a local Docker daemon for single-machine demos. (NemoClaw is removed for now; it will return after a review of its NVIDIA-based installer dependencies.)
 - Kata sandbox provider foundation that builds the hardened agent pod spec shape: RuntimeClass, no service account token, no privileged mode, read-only root filesystem, dropped capabilities, workspace and memory mounts.
 
 Schema migrations currently live under `migrations/`. The first migration creates the `agents` table used by the Postgres store.
