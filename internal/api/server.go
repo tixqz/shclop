@@ -95,6 +95,18 @@ func sandboxProviderFromConfig(cfg config.Config) (sandbox.RuntimeProvider, erro
 		return sandbox.MockRuntimeProvider{}, nil
 	case "docker-demo":
 		return sandbox.DockerDemoProvider{GatewayURL: cfg.DockerGatewayURL, ImagePrefix: cfg.RuntimeImagePrefix}, nil
+	case "kubernetes":
+		return sandbox.NewKubernetesRuntimeProvider(sandbox.KubernetesRuntimeProviderConfig{
+			Namespace:         cfg.KubernetesNamespace,
+			GatewayURL:        cfg.KubernetesGatewayURL,
+			RuntimeClassName:  cfg.AgentRuntimeClassName,
+			Images:            cfg.RuntimeImages,
+			WorkspaceSize:     cfg.WorkspaceSize,
+			StorageClassName:  cfg.WorkspaceStorageClass,
+			WorkspacePolicy:   cfg.WorkspaceRetention,
+			SecretStore:       cfg.SecretStore,
+			NetworkPolicySpec: sandbox.NetworkPolicySpecFromConfig(cfg.NetworkPolicyEnabled, cfg.NetworkPolicyMode, cfg.NetworkPolicyCIDRs),
+		})
 	default:
 		return nil, errors.New("unsupported sandbox provider: " + cfg.SandboxProvider)
 	}

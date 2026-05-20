@@ -10,6 +10,9 @@ type AgentRequest struct {
 	AgentID      string
 	OwnerID      string
 	Runtime      string
+	GatewayURL   string
+	SandboxID    string
+	SecretRef    SecretRef
 	WorkspacePVC string
 	CPU          string
 	Memory       string
@@ -44,6 +47,10 @@ func (p *KataProvider) BuildAgentPod(req AgentRequest) (AgentPodSpec, error) {
 		OwnerID:          req.OwnerID,
 		Image:            image,
 		RuntimeClassName: p.runtimeClassName,
+		GatewayURL:       req.GatewayURL,
+		Runtime:          req.Runtime,
+		SandboxID:        req.SandboxID,
+		SecretRef:        req.SecretRef,
 		WorkspacePVC:     req.WorkspacePVC,
 		CPU:              req.CPU,
 		Memory:           req.Memory,

@@ -54,7 +54,8 @@ docker push registry.example.com/shclop/shclop:0.1.0
 
 helm install shclop charts/shclop \
   --set image.repository=registry.example.com/shclop/shclop \
-  --set image.tag=0.1.0
+  --set image.tag=0.1.0 \
+  --set sandbox.provider=kubernetes
 ```
 
 Check the rendered manifests before applying them:
@@ -62,7 +63,8 @@ Check the rendered manifests before applying them:
 ```bash
 helm template shclop charts/shclop \
   --set image.repository=registry.example.com/shclop/shclop \
-  --set image.tag=0.1.0
+  --set image.tag=0.1.0 \
+  --set sandbox.provider=kubernetes
 ```
 
 For a real cluster, plan these pieces before exposing users:
@@ -248,9 +250,13 @@ The runtime images are bootstrap skeletons. They intentionally follow the upstre
 
 Not implemented yet:
 
-- **Kubernetes sandbox controller.** The repository now has the agent pod spec builder and Kata runtime image catalog boundary, but the backend still does not talk to the Kubernetes API. This layer should create, start, idle, and delete runtime pods and PVCs; watch pod status; collect logs; attach NetworkPolicies; and clean up abandoned resources.
+- **Kubernetes sandbox controller.** The repository now has an embedded Kubernetes provider MVP and the backend does talk to the Kubernetes API for sandbox lifecycle. The current implementation creates Pod, Secret, PVC, and NetworkPolicy resources for `sandbox.provider=kubernetes`, but this remains an MVP. The standalone controller extraction, production Vault-backed secret delivery, and full egress proxy enforcement are still future work.
 
-- **Real Claw execution inside the runtime.** The runtime process now connects to Shclop, registers the agent, receives tasks, and streams demo events. It does not yet invoke NanoClaw, NemoClaw, or OpenClaw for real work. The next step is to translate `task.run` envelopes into the selected agent CLI invocation, stream stdout/stderr as structured events, enforce workspace/memory paths, and shut down cleanly on platform cancellation.
+  Planned direction: continue extracting the controller behind stable interfaces so a future standalone controller can reuse the same resource builders and lifecycle logic. NetworkPolicy should stay configured through sandbox config/Helm values (`disabled`, `restricted`, or `custom`), not by requiring users to write raw per-agent policy YAML. Kubernetes Secret delivery is currently the MVP fallback; production secret delivery should go through a `RuntimeSecretStore`/`SecretRef` abstraction backed by Vault Agent Injector, CSI Secret Store Driver, or External Secrets. See `docs/kubernetes-claw-runtime-design.md`.
+
+- **Real Claw execution inside the runtime.** The runtime process now connects to Shclop, registers the agent, receives tasks, and streams demo events. It uses an adapter boundary, but it does not yet invoke NanoClaw/OpenClaw for real work. The next step is to translate `task.run` envelopes into the selected agent CLI invocation, stream stdout/stderr as structured events, enforce workspace/memory paths, and shut down cleanly on platform cancellation.
+
+  Planned direction: add a runtime-side `ClawAdapter` boundary. Public docs found so far do not prove NanoClaw/OpenClaw are fully compatible at the task-execution contract level, so Shclop should verify runtime capabilities and prefer one `ClawCompatibleAdapter` only when the selected binaries expose the same contract. If no structured contract is available, a subprocess adapter may bridge stdout/stderr/exit codes into `message.started`, `message.delta`, `message.done`, and `message.error` events. See `docs/kubernetes-claw-runtime-design.md`.
 
 - **Full Postgres platform schema.** Agents can use Postgres, but the durable platform model is still incomplete. Production needs tables for users, tenants, teams, sessions, messages, schedules, approvals, grants, lifecycle state, tool/action ledgers, usage, and audit records. Agent memory still belongs in workspace files; Postgres is for platform state and ordering.
 
@@ -264,7 +270,7 @@ Not implemented yet:
 
 - **Scheduler execution.** Schedule concepts are architectural only. The platform needs a durable schedule table, lease-based Go workers, timezone handling, retry policy, owner approval for agent-created schedules, and a path that wakes an idle agent before delivering the scheduled task.
 
-- **Egress proxy enforcement.** The README describes deny-by-default egress, but no proxy or NetworkPolicy generator exists yet. This layer should block private ranges and arbitrary internet by default, allow explicit destinations per agent/tool/grant, log denies, and surface approval prompts when an agent requests new access.
+- **Egress proxy enforcement.** Generated MVP NetworkPolicies already exist for Kubernetes sandboxes, but the full egress proxy is still missing. This layer should add proxy enforcement, per-agent/tool/grant allowlists, deny logging, and approval prompts when an agent requests new access.
 
 - **Metrics endpoint and production dashboards.** The CLI has a metrics flag, but there is no useful metrics surface yet. The next step is to expose API, gateway, scheduler, broker, runtime lifecycle, secret-use, and egress metrics with labels that work for Prometheus without leaking tenant data.
 

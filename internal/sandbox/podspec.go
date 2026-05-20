@@ -1,10 +1,16 @@
 package sandbox
 
+import "path/filepath"
+
 type AgentPodRequest struct {
 	AgentID          string
 	OwnerID          string
 	Image            string
 	RuntimeClassName string
+	GatewayURL       string
+	Runtime          string
+	SandboxID        string
+	SecretRef        SecretRef
 	WorkspacePVC     string
 	CPU              string
 	Memory           string
@@ -35,29 +41,35 @@ type ContainerSpec struct {
 	DropCapabilities         []string
 	CPU                      string
 	Memory                   string
+	Env                      map[string]string
 	VolumeMounts             []VolumeMount
 }
 
 type VolumeSpec struct {
-	Name string
-	PVC  string
+	Name       string
+	PVC        string
+	SecretName string
+	SecretKey  string
+	SecretPath string
 }
 
 type VolumeMount struct {
 	Name      string
 	MountPath string
+	ReadOnly  bool
 }
 
 func BuildAgentPodSpec(req AgentPodRequest) AgentPodSpec {
-	return AgentPodSpec{
+	spec := AgentPodSpec{
 		Name:             "agent-" + req.AgentID,
 		RuntimeClassName: req.RuntimeClassName,
-		Labels: map[string]string{
-			"app.kubernetes.io/name":      "shclop-agent-runtime",
-			"app.kubernetes.io/component": "agent-runtime",
-			"shclop.io/agent-id":          req.AgentID,
-			"shclop.io/owner-id":          req.OwnerID,
-		},
+		Labels: func() map[string]string {
+			labels := RuntimeLabels(req.AgentID, req.Runtime, req.SandboxID)
+			if v := labelValue(req.OwnerID); v != "" {
+				labels["shclop.io/owner-id"] = v
+			}
+			return labels
+		}(),
 		AutomountServiceAccountToken: false,
 		HostNetwork:                  false,
 		HostPID:                      false,
@@ -75,6 +87,12 @@ func BuildAgentPodSpec(req AgentPodRequest) AgentPodSpec {
 			DropCapabilities:         []string{"ALL"},
 			CPU:                      req.CPU,
 			Memory:                   req.Memory,
+			Env: map[string]string{
+				"SHCLOP_GATEWAY_URL":        req.GatewayURL,
+				"SHCLOP_AGENT_ID":           req.AgentID,
+				"SHCLOP_AGENT_FLAVOR":       req.Runtime,
+				"SHCLOP_RUNTIME_TOKEN_FILE": req.SecretRef.MountPath,
+			},
 			VolumeMounts: []VolumeMount{
 				{Name: "workspace", MountPath: "/workspace"},
 				{Name: "memory", MountPath: "/memory"},
@@ -85,4 +103,17 @@ func BuildAgentPodSpec(req AgentPodRequest) AgentPodSpec {
 			{Name: "memory", PVC: req.WorkspacePVC},
 		},
 	}
+
+	if req.SecretRef.Name != "" && req.SecretRef.MountPath != "" {
+		mountDir := filepath.Dir(req.SecretRef.MountPath)
+		mountBase := filepath.Base(req.SecretRef.MountPath)
+		secretKey := req.SecretRef.Key
+		if secretKey == "" {
+			secretKey = mountBase
+		}
+		spec.Volumes = append(spec.Volumes, VolumeSpec{Name: "runtime-token", SecretName: req.SecretRef.Name, SecretKey: secretKey, SecretPath: mountBase})
+		spec.Container.VolumeMounts = append(spec.Container.VolumeMounts, VolumeMount{Name: "runtime-token", MountPath: mountDir, ReadOnly: true})
+	}
+
+	return spec
 }
