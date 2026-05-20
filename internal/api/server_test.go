@@ -18,8 +18,45 @@ import (
 	"github.com/mipopov/shclop/internal/config"
 	"github.com/mipopov/shclop/internal/domain"
 	"github.com/mipopov/shclop/internal/gateway"
+	"github.com/mipopov/shclop/internal/sandbox"
 	"github.com/mipopov/shclop/internal/security"
 )
+
+func TestSandboxProviderFromConfigSupportsKubernetes(t *testing.T) {
+	cfg := config.Default()
+	cfg.SandboxProvider = "kubernetes"
+	cfg.KubernetesNamespace = "agents"
+	cfg.KubernetesGatewayURL = "ws://shclop-backend:8080/runtime/ws"
+	cfg.AgentRuntimeClassName = "kata-clh"
+	cfg.RuntimeImages = map[string]string{
+		"nanoclaw": "registry.example.com/shclop-runtime-nanoclaw:1",
+		"openclaw": "registry.example.com/shclop-runtime-openclaw:1",
+	}
+	cfg.NetworkPolicyEnabled = true
+	cfg.NetworkPolicyMode = "restricted"
+	cfg.NetworkPolicyCIDRs = "10.0.0.0/8,  192.168.0.0/16 ,"
+
+	provider, err := sandboxProviderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("sandboxProviderFromConfig: %v", err)
+	}
+	if _, ok := provider.(*sandbox.KubernetesRuntimeProvider); !ok {
+		t.Fatalf("expected KubernetesRuntimeProvider, got %T", provider)
+	}
+	got := provider.(*sandbox.KubernetesRuntimeProvider).Config()
+	if got.Namespace != cfg.KubernetesNamespace || got.GatewayURL != cfg.KubernetesGatewayURL || got.RuntimeClassName != cfg.AgentRuntimeClassName || got.WorkspaceSize != cfg.WorkspaceSize || got.StorageClassName != cfg.WorkspaceStorageClass || got.WorkspacePolicy != cfg.WorkspaceRetention || got.SecretStore != cfg.SecretStore {
+		t.Fatalf("unexpected propagated config: %#v", got)
+	}
+	if got.Images["nanoclaw"] != cfg.RuntimeImages["nanoclaw"] || got.Images["openclaw"] != cfg.RuntimeImages["openclaw"] {
+		t.Fatalf("unexpected images: %#v", got.Images)
+	}
+	if !got.NetworkPolicySpec.Enabled || got.NetworkPolicySpec.Mode != sandbox.NetworkPolicyRestricted {
+		t.Fatalf("unexpected network policy: %#v", got.NetworkPolicySpec)
+	}
+	if len(got.NetworkPolicySpec.AllowedEgress) != 2 || got.NetworkPolicySpec.AllowedEgress[0].Name != "custom-1" || got.NetworkPolicySpec.AllowedEgress[0].CIDR != "10.0.0.0/8" || got.NetworkPolicySpec.AllowedEgress[0].Ports[0] != 443 || got.NetworkPolicySpec.AllowedEgress[1].Name != "custom-2" || got.NetworkPolicySpec.AllowedEgress[1].CIDR != "192.168.0.0/16" {
+		t.Fatalf("unexpected allowed egress: %#v", got.NetworkPolicySpec.AllowedEgress)
+	}
+}
 
 func TestHealth(t *testing.T) {
 	server := newTestServer()

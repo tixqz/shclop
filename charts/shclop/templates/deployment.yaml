@@ -40,13 +40,23 @@ spec:
             - "--sandbox-provider={{ .Values.sandbox.provider }}"
             - "--docker-gateway-url={{ .Values.sandbox.dockerGatewayURL }}"
             - "--runtime-image-prefix={{ .Values.sandbox.runtimeImagePrefix }}"
+            - "--kubernetes-namespace={{ .Values.sandbox.kubernetes.namespace }}"
+            - "--kubernetes-gateway-url={{ .Values.sandbox.kubernetes.gatewayURL }}"
+            - "--workspace-size={{ .Values.sandbox.kubernetes.workspace.size }}"
+            - "--workspace-storage-class={{ .Values.sandbox.kubernetes.workspace.storageClassName }}"
+            - "--workspace-retention={{ .Values.sandbox.kubernetes.workspace.retention }}"
+            - "--runtime-secret-store={{ .Values.sandbox.kubernetes.secretStore }}"
+            - "--network-policy={{ .Values.sandbox.kubernetes.networkPolicy.enabled }}"
+            - "--network-policy-mode={{ .Values.sandbox.kubernetes.networkPolicy.mode }}"
+            - "--network-policy-allowed-cidrs={{ .Values.sandbox.kubernetes.networkPolicy.allowedCIDRs }}"
+            - "--agent-runtime-class={{ .Values.agentRuntime.runtimeClassName }}"
           env:
             {{- if .Values.config.postgresDSNSecret.name }}
             - name: SHCLOP_POSTGRES_DSN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.config.postgresDSNSecret.name }}
-                  key: {{ .Values.config.postgresDSNSecret.key }}
+                  key: {{ .Values.config.postgresDSNSecret.key | quote }}
             {{- end }}
             - name: SHCLOP_AGENT_RUNTIME_CLASS
               value: {{ .Values.agentRuntime.runtimeClassName | quote }}

@@ -23,6 +23,18 @@ sandbox:
   provider: mock
   dockerGatewayURL: ws://host.docker.internal:8080/runtime/ws
   runtimeImagePrefix: shclop-runtime
+  kubernetes:
+    namespace: default
+    gatewayURL: ws://shclop-backend:8080/runtime/ws
+    workspace:
+      size: 10Gi
+      storageClassName: ""
+      retention: delete
+    secretStore: kubernetes
+    networkPolicy:
+      enabled: true
+      mode: restricted
+      allowedCIDRs: ""
 
 agentRuntime:
   runtimeClassName: kata
