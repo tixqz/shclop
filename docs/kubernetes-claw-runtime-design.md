@@ -20,12 +20,18 @@ The repository already has:
 - demo runtime process that connects to `/runtime/ws` and streams demo events;
 - Docker demo sandbox provider for local demos;
 - hardened Kubernetes/Kata pod spec builder foundation;
+<<<<<<< HEAD
 - embedded Kubernetes provider MVP for sandbox lifecycle;
 - Kubernetes Secret store MVP fallback;
 - NetworkPolicy generation with broad backend/Vault allow rules unless custom CIDRs are configured;
 - runtime image skeletons for NanoClaw and OpenClaw.
 
 Remaining work includes Kubernetes pod status/watch/log collection, production Vault-backed secret delivery, full egress proxy enforcement, standalone controller extraction, and real NanoClaw/OpenClaw invocation beyond the adapter/subprocess boundary.
+=======
+- runtime image skeletons for NanoClaw and OpenClaw.
+
+Missing pieces are Kubernetes API CRUD/watch/cleanup and real Claw execution inside the runtime.
+>>>>>>> 9a8b099 (add agents.md to index)
 
 ## Architecture Decision
 
@@ -131,18 +137,38 @@ Example Helm/config shape:
 
 ```yaml
 sandbox:
+<<<<<<< HEAD
   kubernetes:
     networkPolicy:
       enabled: true
       mode: restricted # disabled | restricted | custom
       allowedCIDRs: "10.20.30.40/32,10.20.30.41/32"
+=======
+  networkPolicy:
+    enabled: true
+    mode: restricted # disabled | restricted | custom
+    allowBackend: true
+    allowVault: true
+    allowedEgress:
+      - name: corporate-proxy
+        cidr: 10.20.30.40/32
+        ports: [443]
+      - name: package-registry
+        dnsName: registry.example.com
+        ports: [443]
+>>>>>>> 9a8b099 (add agents.md to index)
 ```
 
 Supported modes:
 
 - `disabled`: do not create NetworkPolicy; development/debug only.
+<<<<<<< HEAD
 - `restricted`: default mode; creates the MVP NetworkPolicy with broad backend/Vault allow rules and no custom egress CIDRs. Stronger deny-by-default controls for Kubernetes API, cloud metadata endpoints, Postgres, and private ranges belong to the future egress proxy/policy layer.
 - `custom`: future extension for explicit operator-defined egress allow rules for corporate proxies, registries, or approved internal services.
+=======
+- `restricted`: default mode; deny-by-default, allow backend gateway, allow Vault/SecretStore delivery when configured, and deny Kubernetes API, cloud metadata endpoints, Postgres, and arbitrary private ranges.
+- `custom`: keep deny-by-default and add explicit operator-defined `allowedEgress` entries for corporate proxies, registries, or approved internal services.
+>>>>>>> 9a8b099 (add agents.md to index)
 
 Internal config shape:
 
@@ -162,7 +188,11 @@ The Kubernetes provider should delegate policy generation to a focused builder:
 BuildRuntimeNetworkPolicy(agentID, sandboxID string, spec NetworkPolicySpec) (*networkingv1.NetworkPolicy, error)
 ```
 
+<<<<<<< HEAD
 MVP configuration is operator/admin-owned through Helm values or backend config and can apply globally or by runtime flavor. Agent-requested egress, approval prompts, dynamic policy updates, and richer per-egress objects belong to the later egress proxy/policy system, not this MVP.
+=======
+MVP configuration is operator/admin-owned through Helm values or backend config and can apply globally or by runtime flavor. Agent-requested egress, approval prompts, and dynamic policy updates belong to the later egress proxy/policy system, not this MVP.
+>>>>>>> 9a8b099 (add agents.md to index)
 
 ## Workspace PVC
 
