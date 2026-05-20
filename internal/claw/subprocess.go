@@ -20,7 +20,6 @@ func (a SubprocessAdapter) Run(ctx context.Context, task Task) (<-chan Event, er
 		return nil, errors.New("binary is required")
 	}
 	out := make(chan Event, 32)
-	done := make(chan struct{})
 	cmd := exec.CommandContext(ctx, a.Binary, a.Args...)
 	if len(a.Env) > 0 {
 		cmd.Env = append([]string(nil), a.Env...)
@@ -56,17 +55,14 @@ func (a SubprocessAdapter) Run(ctx context.Context, task Task) (<-chan Event, er
 
 	var wg sync.WaitGroup
 	var closeOnce sync.Once
-	var doneOnce sync.Once
-	closeDone := func() { doneOnce.Do(func() { close(done) }) }
 	closeOut := func() { closeOnce.Do(func() { close(out) }) }
+
+	// Cleanup goroutine: closes pipes on context cancellation.
 	go func() {
-		select {
-		case <-ctx.Done():
-			_ = stdin.Close()
-			_ = stdout.Close()
-			_ = stderr.Close()
-		case <-done:
-		}
+		<-ctx.Done()
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
 	}()
 	stream := func(r io.Reader, prefix string) {
 		defer wg.Done()
@@ -98,7 +94,6 @@ func (a SubprocessAdapter) Run(ctx context.Context, task Task) (<-chan Event, er
 	go stream(stderr, "stderr: ")
 
 	go func() {
-		defer closeDone()
 		wg.Wait()
 		waitErr := cmd.Wait()
 		if waitErr == nil {

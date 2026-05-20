@@ -50,12 +50,9 @@ func NewKubernetesRuntimeProvider(cfg KubernetesRuntimeProviderConfig) (*Kuberne
 	if cfg.SecretStore != "kubernetes" {
 		return nil, fmt.Errorf("unsupported secret store %q", cfg.SecretStore)
 	}
-
-	images := make(map[string]string, len(cfg.Images))
-	for name, image := range cfg.Images {
-		images[name] = image
+	if cfg.Images == nil {
+		cfg.Images = make(map[string]string)
 	}
-	cfg.Images = images
 
 	client, err := buildKubernetesClient()
 	if err != nil {
@@ -177,10 +174,11 @@ func deleteIgnoreNotFound(ctx context.Context, deleteFn deleteFunc, name string)
 	return nil
 }
 
+func (p *KubernetesRuntimeProvider) namespace() string { return p.cfg.Namespace }
+
 func buildKubernetesClient() (kubernetes.Interface, error) {
 	if cfg, err := rest.InClusterConfig(); err == nil {
-		client, clientErr := kubernetes.NewForConfig(cfg)
-		if clientErr == nil {
+		if client, err := kubernetes.NewForConfig(cfg); err == nil {
 			return client, nil
 		}
 	}
@@ -189,16 +187,10 @@ func buildKubernetesClient() (kubernetes.Interface, error) {
 		if err != nil {
 			return nil, fmt.Errorf("build kubernetes client from kubeconfig: %w", err)
 		}
-		client, err := kubernetes.NewForConfig(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("create kubernetes client: %w", err)
-		}
-		return client, nil
+		return kubernetes.NewForConfig(cfg)
 	}
 	return nil, errors.New("unable to configure kubernetes client from in-cluster config or KUBECONFIG")
 }
-
-func (p *KubernetesRuntimeProvider) namespace() string { return p.cfg.Namespace }
 
 func (p *KubernetesRuntimeProvider) createOrUpdateSecret(ctx context.Context, secret *corev1.Secret) error {
 	if secret == nil {
