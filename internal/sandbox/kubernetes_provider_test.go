@@ -139,6 +139,40 @@ func TestKubernetesRuntimeProviderStartDoesNotReplaceExistingPodOrPVCSpec(t *tes
 	}
 }
 
+func TestNewKubernetesRuntimeProviderRejectsEmptyRuntimeClassName(t *testing.T) {
+	// buildKubernetesClient will fail outside a cluster, but the
+	// RuntimeClassName check happens before client creation.
+	_, err := NewKubernetesRuntimeProvider(KubernetesRuntimeProviderConfig{
+		Namespace:        "default",
+		RuntimeClassName: "", // empty – should fail fast
+	})
+	if err == nil {
+		t.Fatal("expected error for empty RuntimeClassName")
+	}
+	if !strings.Contains(err.Error(), "runtime class name") {
+		t.Fatalf("expected error about runtime class name, got: %v", err)
+	}
+}
+
+func TestKubernetesRuntimeProviderStartValidatesLLMGatewaySecret(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "llm-secret", Namespace: "default"}, Data: map[string][]byte{"api-key": []byte("secret")}})
+	provider := &KubernetesRuntimeProvider{
+		cfg:         KubernetesRuntimeProviderConfig{Namespace: "default", GatewayURL: "ws://gateway", RuntimeClassName: "kata", Images: map[string]string{"openclaw": "image-openclaw:latest"}, WorkspaceSize: "20Gi", SecretStore: "kubernetes"},
+		client:      client,
+		secretStore: KubernetesSecretStore{Namespace: "default"},
+	}
+	if _, err := provider.Start(context.Background(), StartRequest{AgentID: "agent-ok", OwnerID: "user-1", Runtime: "openclaw", RuntimeToken: "tok-123", LLMGatewaySecretName: "llm-secret", LLMGatewaySecretKey: "api-key"}); err != nil {
+		t.Fatalf("expected existing secret key to pass validation: %v", err)
+	}
+
+	if _, err := provider.Start(context.Background(), StartRequest{AgentID: "agent-missing-key", OwnerID: "user-1", Runtime: "openclaw", RuntimeToken: "tok-123", LLMGatewaySecretName: "llm-secret", LLMGatewaySecretKey: "missing"}); err == nil || !strings.Contains(err.Error(), "key \"missing\" not found") {
+		t.Fatalf("expected missing key validation error, got %v", err)
+	}
+	if _, err := provider.Start(context.Background(), StartRequest{AgentID: "agent-missing-secret", OwnerID: "user-1", Runtime: "openclaw", RuntimeToken: "tok-123", LLMGatewaySecretName: "missing-secret", LLMGatewaySecretKey: "api-key"}); err == nil || !strings.Contains(err.Error(), "missing-secret") {
+		t.Fatalf("expected missing secret validation error, got %v", err)
+	}
+}
+
 func TestKubernetesRuntimeProviderStartValidatesInputs(t *testing.T) {
 	provider := &KubernetesRuntimeProvider{cfg: KubernetesRuntimeProviderConfig{Images: map[string]string{"openclaw": "image"}}, client: fake.NewSimpleClientset(), secretStore: KubernetesSecretStore{Namespace: "default"}}
 	if _, err := provider.Start(context.Background(), StartRequest{AgentID: "agent-1", Runtime: "openclaw"}); err == nil {

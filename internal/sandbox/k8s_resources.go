@@ -59,7 +59,7 @@ func buildRuntimeContainer(spec ContainerSpec) corev1.Container {
 		Name:            spec.Name,
 		Image:           spec.Image,
 		ImagePullPolicy: corev1.PullIfNotPresent,
-		Env:             buildEnvVars(spec.Env),
+		Env:             append(buildEnvVars(spec.Env), buildSecretEnvVars(spec.EnvFrom)...),
 		VolumeMounts:    buildVolumeMounts(spec.VolumeMounts),
 		SecurityContext: &corev1.SecurityContext{Privileged: boolPtr(false), AllowPrivilegeEscalation: boolPtr(false), ReadOnlyRootFilesystem: boolPtr(true), RunAsNonRoot: boolPtr(true), RunAsUser: &spec.RunAsUser, SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
 	}
@@ -98,6 +98,28 @@ func buildEnvVars(env map[string]string) []corev1.EnvVar {
 	out := make([]corev1.EnvVar, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, corev1.EnvVar{Name: k, Value: env[k]})
+	}
+	return out
+}
+
+func buildSecretEnvVars(envFrom []EnvFromSource) []corev1.EnvVar {
+	if len(envFrom) == 0 {
+		return nil
+	}
+	out := make([]corev1.EnvVar, 0, len(envFrom))
+	for _, e := range envFrom {
+		if e.SecretName == "" || e.SecretKey == "" || e.EnvVar == "" {
+			continue
+		}
+		out = append(out, corev1.EnvVar{
+			Name: e.EnvVar,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.SecretName},
+					Key:                  e.SecretKey,
+				},
+			},
+		})
 	}
 	return out
 }

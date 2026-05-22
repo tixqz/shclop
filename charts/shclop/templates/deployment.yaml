@@ -1,68 +1,129 @@
+{{- if not .Values.agentRuntime.runtimeClassName -}}
+{{- fail "agentRuntime.runtimeClassName must be a non-empty string (e.g. 'kata')" -}}
+{{- end -}}
+
+{{- if ne .Values.sandbox.provider "kubernetes" -}}
+{{- fail "sandbox.provider must be 'kubernetes' for production deployments" -}}
+{{- end -}}
+
+{{- if and (not .Values.postgresql.bundled) (not .Values.postgresql.existingSecret.name) -}}
+{{- fail "postgresql.bundled must be true or postgresql.existingSecret.name must be set" -}}
+{{- end -}}
+
+{{- $fullname := include "shclop.fullname" . -}}
+{{- $runtimeGatewayURL := .Values.sandbox.kubernetes.gatewayURL | default (printf "ws://%s-backend:8080/runtime/ws" $fullname) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-backend
+  name: {{ $fullname }}-backend
   labels:
-    app.kubernetes.io/name: shclop
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "shclop.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend
-    app.kubernetes.io/part-of: shclop
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicas }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: shclop
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "shclop.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: backend
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: shclop
-        app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- include "shclop.labels" . | nindent 8 }}
         app.kubernetes.io/component: backend
-        app.kubernetes.io/part-of: shclop
-        app.kubernetes.io/managed-by: {{ .Release.Service }}
-        helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
     spec:
+      serviceAccountName: {{ $fullname }}-backend
+      initContainers:
+        - name: migrate
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          command:
+            - sh
+            - -ec
+            - |
+              echo "Waiting for PostgreSQL to be ready..."
+              for i in $(seq 1 60); do
+                if psql "$SHCLOP_POSTGRES_DSN" -c "SELECT 1" > /dev/null 2>&1; then
+                  echo "PostgreSQL is ready, applying migrations..."
+                  psql "$SHCLOP_POSTGRES_DSN" -f /migration/migrate.sql
+                  echo "Migrations applied successfully."
+                  exit 0
+                fi
+                echo "  attempt $i/60 — PostgreSQL not ready yet, waiting 2s..."
+                sleep 2
+              done
+              echo "ERROR: Failed to connect to PostgreSQL after 60 attempts."
+              exit 1
+          env:
+            - name: SHCLOP_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ if .Values.postgresql.existingSecret.name }}{{ .Values.postgresql.existingSecret.name }}{{ else }}{{ $fullname }}-postgres{{ end }}
+                  key: {{ if .Values.postgresql.existingSecret.name }}{{ .Values.postgresql.existingSecret.key }}{{ else }}dsn{{ end }}
+          volumeMounts:
+            - name: migration-sql
+              mountPath: /migration
+              readOnly: true
       containers:
         - name: shclop
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - "--addr=:8080"
-            - "--log-level={{ .Values.config.logLevel }}"
-            - "--metrics={{ .Values.config.metrics }}"
-            - "--store={{ .Values.config.store }}"
-            - "--identity-provider={{ .Values.identity.provider }}"
-            - "--identity-mock-yaml={{ .Values.identity.mockYAMLPath }}"
+            - "--store=postgres"
             - "--sandbox-provider={{ .Values.sandbox.provider }}"
-            - "--docker-gateway-url={{ .Values.sandbox.dockerGatewayURL }}"
-            - "--runtime-image-prefix={{ .Values.sandbox.runtimeImagePrefix }}"
             - "--kubernetes-namespace={{ .Values.sandbox.kubernetes.namespace }}"
-            - "--kubernetes-gateway-url={{ .Values.sandbox.kubernetes.gatewayURL }}"
+            - "--kubernetes-gateway-url={{ $runtimeGatewayURL }}"
             - "--workspace-size={{ .Values.sandbox.kubernetes.workspace.size }}"
             - "--workspace-storage-class={{ .Values.sandbox.kubernetes.workspace.storageClassName }}"
             - "--workspace-retention={{ .Values.sandbox.kubernetes.workspace.retention }}"
             - "--runtime-secret-store={{ .Values.sandbox.kubernetes.secretStore }}"
             - "--network-policy={{ .Values.sandbox.kubernetes.networkPolicy.enabled }}"
-            - "--network-policy-mode={{ .Values.sandbox.kubernetes.networkPolicy.mode }}"
+            - '--network-policy-mode={{ ternary "restricted" "disabled" .Values.sandbox.kubernetes.networkPolicy.enabled }}'
             - "--network-policy-allowed-cidrs={{ .Values.sandbox.kubernetes.networkPolicy.allowedCIDRs }}"
             - "--agent-runtime-class={{ .Values.agentRuntime.runtimeClassName }}"
+            - "--llm-gateway-base-url={{ .Values.llmGateway.baseURL }}"
+            - "--llm-gateway-secret-name={{ .Values.llmGateway.existingSecret.name }}"
+            - "--llm-gateway-secret-key={{ .Values.llmGateway.existingSecret.key }}"
+            - "--bootstrap-admin-username={{ .Values.bootstrapAdmin.username }}"
+            - "--observability-grafana-url={{ .Values.observability.grafana.url }}"
           env:
-            {{- if .Values.config.postgresDSNSecret.name }}
+            - name: SHCLOP_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.bootstrapAdmin.existingSecret.name }}
+                  name: {{ .Values.bootstrapAdmin.existingSecret.name }}
+                  key: {{ .Values.bootstrapAdmin.existingSecret.key }}
+                  {{- else }}
+                  name: {{ $fullname }}-bootstrap-admin
+                  key: password
+                  {{- end }}
+            {{- if or .Values.postgresql.existingSecret.name .Values.postgresql.bundled }}
             - name: SHCLOP_POSTGRES_DSN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.config.postgresDSNSecret.name }}
-                  key: {{ .Values.config.postgresDSNSecret.key | quote }}
+                  name: {{ if .Values.postgresql.existingSecret.name }}{{ .Values.postgresql.existingSecret.name }}{{ else }}{{ $fullname }}-postgres{{ end }}
+                  key: {{ if .Values.postgresql.existingSecret.name }}{{ .Values.postgresql.existingSecret.key }}{{ else }}dsn{{ end }}
             {{- end }}
-            - name: SHCLOP_AGENT_RUNTIME_CLASS
-              value: {{ .Values.agentRuntime.runtimeClassName | quote }}
-            - name: SHCLOP_RUNTIME_IMAGE_NANOCLAW
-              value: {{ .Values.agentRuntime.images.nanoclaw | quote }}
             - name: SHCLOP_RUNTIME_IMAGE_OPENCLAW
               value: {{ .Values.agentRuntime.images.openclaw | quote }}
+            - name: SHCLOP_RUNTIME_IMAGE_NANOCLAW
+              value: {{ .Values.agentRuntime.images.nanoclaw | quote }}
           ports:
             - containerPort: 8080
+              name: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: migration-sql
+          configMap:
+            name: {{ $fullname }}-migration

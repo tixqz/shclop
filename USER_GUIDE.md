@@ -1,78 +1,80 @@
 # Shclop user guide
 
-This guide describes the workspace user flow implemented for the current demo. Workspace users manage their own agents and sessions; they do not manage the platform environment.
+This guide describes the current user flow for creating and using OpenClaw/NanoClaw agents in a self-hosted Shclop installation.
 
-## Demo account
+## Sign in
 
-Run Shclop with the mock YAML identity provider:
+Shclop uses local accounts. An administrator creates your account and gives you a username and password.
 
-```bash
-go run ./cmd/shclop \
-  --dev \
-  --store inmemory \
-  --identity-provider mock-yaml \
-  --identity-mock-yaml config/identity.mock.yaml
-```
+Open the Shclop URL provided by your operator, sign in, and use **Log out** from the user menu when finished.
 
-Workspace user login:
+If your account is disabled, login fails. Contact an administrator.
 
-```text
-bob@acme.test / bob
-```
+## Create an agent
 
-Bob has the workspace user role in tenant `acme` and team `engineering`.
+Agents are owned by the user who creates them.
 
-## Home
+1. Open **Agents**.
+2. Select **Create agent**.
+3. Enter an agent name.
+4. Choose a runtime:
+   - **OpenClaw** for the OpenClaw runtime image;
+   - **NanoClaw** for the NanoClaw runtime image.
+5. Select an enabled model from the model list.
+6. Save the agent.
 
-After login, Bob lands on Home. Home is an event-first feed, not a workspace directory or runtime debug panel. It shows:
+Only administrator-enabled models are available. If a model is later disabled, the agent cannot be started with that model until an administrator enables it again or you choose another enabled model.
 
-- a compact Continue strip for the last workspace and recent/next chat;
-- a compact Workspace progress section with per-workspace task bars;
-- a pinned Needs attention subset for drafts, pending integrations, and policy blocks;
-- a recent meaningful event timeline with workspace, subject, action, severity, and time;
-- filtered backend activity when it adds user-facing context.
+## Start and stop an agent
 
-Workspace details, counts, and browsing belong in the Workspaces tab.
+To start an agent:
 
-Top-level tabs now include global **Agents** and **Skills** catalogs alongside Home, Workspaces, and the admin-only Admin area. Agents and Skills are user-wide UI catalogs in this prototype; they are not workspace-scoped by default.
+1. Open **Agents**.
+2. Select your agent.
+3. Choose **Start**.
 
-Both catalogs are list-first: the Add button opens the create modal, and clicking a row opens a detail modal with edit/delete actions.
+In production, starting an agent asks the backend to create a Kubernetes runtime pod using the configured Kata RuntimeClass. The pod receives the selected model, the LLM gateway base URL, and an API key SecretKeyRef. Shclop does not expose the raw API key in the UI.
 
-The top-right user menu shows the signed-in user, avatar initials, organization metadata (`tenant_id` and `team_ids`), and roles from the identity provider. Settings is visible but disabled for now; Log out clears the current UI session.
+To stop an agent:
 
-## Agent flow
+1. Open the agent.
+2. Choose **Stop**.
 
-1. Log in as Bob.
-2. Open Home to continue recent workspace work or jump into Workspaces.
-3. Open a workspace.
-4. Create or select a workspace chat.
-5. Choose the primary agent, allowed workspace context, and safety preset for the chat.
-6. Use workspace activity and backend signals to understand what happened next.
+Stopping an agent asks the runtime provider to stop the Kubernetes resources for that agent.
 
-## Global catalogs
+## Chat with an agent
 
-- **Agents** holds reusable global agents with name, model, tags, purpose, state, and linked workspaces.
-- **Skills** holds reusable instruction packs created in the UI or imported from an external URL.
-- Workspace assignment for global agents is intentionally not exposed in this prototype UI yet.
-- Skills are cataloged now and can be attached to agents later.
+After the agent is running:
 
-When the backend runs with `--sandbox-provider docker-demo`, starting the agent launches a local runtime container through Docker. With the default mock sandbox provider, the platform issues a runtime lease but does not start a real container.
+1. Open the agent chat.
+2. Type a task or question.
+3. Send the message.
+4. Watch streamed responses and status events.
 
-## Activity log
+Runtime work is performed by the selected OpenClaw/NanoClaw runtime image. The runtime connects back to Shclop through the runtime WebSocket and streams events to the browser chat.
 
-The activity log shows Bob’s own actions, including:
+## Activity
+
+The activity view shows user-facing events such as:
 
 - login;
 - agent creation;
-- agent start request;
-- sandbox start result;
-- routed browser task.
+- start request;
+- runtime start result;
+- chat task routing;
+- stop request.
 
-Admins can see system-wide activity. Workspace users see only their own activity.
+Regular users see their own activity. Admins can see broader platform activity where exposed by the admin UI.
 
 ## Current limitations
 
-- Agent and skill changes are UI-only in this prototype; durable backend persistence is not implemented yet.
-- Previous session history is represented by workspace chat examples and in-memory activity only.
-- Activity is not durable yet.
-- Runtime output is demo structured events; real OpenClaw/NanoClaw/NemoClaw task execution is not wired yet.
+The current user path does not include:
+
+- workspaces;
+- skills or catalogs;
+- MCP tools;
+- third-party integrations;
+- user-managed provider credentials;
+- approval workflows for security policies.
+
+If an expected model, runtime, or gateway is unavailable, contact an administrator.

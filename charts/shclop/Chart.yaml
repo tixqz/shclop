@@ -1,6 +1,7 @@
 apiVersion: v2
 name: shclop
-description: Self-hosted Claw orchestration platform
+description: Self-hosted Claw orchestration platform — production single-node deployment
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+kubeVersion: ">=1.24.0-0"

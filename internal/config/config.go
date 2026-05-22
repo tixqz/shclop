@@ -13,8 +13,6 @@ type Config struct {
 	MockSecrets           bool
 	Store                 string
 	PostgresDSN           string
-	IdentityProvider      string
-	IdentityMockYAMLPath  string
 	SandboxProvider       string
 	DockerGatewayURL      string
 	RuntimeImagePrefix    string
@@ -32,6 +30,17 @@ type Config struct {
 	LogLevel              string
 	Metrics               bool
 	StaticDir             string
+
+	// LLM Gateway
+	LLMGatewayBaseURL    string
+	LLMGatewaySecretName string
+	LLMGatewaySecretKey  string
+
+	// Bootstrap admin
+	BootstrapAdminUsername string
+
+	// Observability
+	GrafanaURL string
 }
 
 func Default() Config {
@@ -39,8 +48,6 @@ func Default() Config {
 		Addr:                  ":8080",
 		Store:                 "inmemory",
 		PostgresDSN:           os.Getenv("SHCLOP_POSTGRES_DSN"),
-		IdentityProvider:      env("SHCLOP_IDENTITY_PROVIDER", "local"),
-		IdentityMockYAMLPath:  env("SHCLOP_IDENTITY_MOCK_YAML", "config/identity.mock.yaml"),
 		SandboxProvider:       env("SHCLOP_SANDBOX_PROVIDER", "mock"),
 		DockerGatewayURL:      env("SHCLOP_DOCKER_GATEWAY_URL", "ws://host.docker.internal:8080/runtime/ws"),
 		RuntimeImagePrefix:    env("SHCLOP_RUNTIME_IMAGE_PREFIX", "shclop-runtime"),
@@ -61,6 +68,17 @@ func Default() Config {
 		LogLevel:              "info",
 		Metrics:               true,
 		StaticDir:             "web/dist",
+
+		// LLM Gateway
+		LLMGatewayBaseURL:    os.Getenv("SHCLOP_LLM_GATEWAY_BASE_URL"),
+		LLMGatewaySecretName: os.Getenv("SHCLOP_LLM_GATEWAY_SECRET_NAME"),
+		LLMGatewaySecretKey:  os.Getenv("SHCLOP_LLM_GATEWAY_SECRET_KEY"),
+
+		// Bootstrap admin
+		BootstrapAdminUsername: env("SHCLOP_BOOTSTRAP_ADMIN_USERNAME", "admin"),
+
+		// Observability
+		GrafanaURL: os.Getenv("SHCLOP_GRAFANA_URL"),
 	}
 }
 

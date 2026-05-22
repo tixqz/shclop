@@ -1,324 +1,152 @@
-# Kubernetes Sandbox and Claw Runtime Execution Design
+# Kubernetes OpenClaw/NanoClaw Runtime Design
 
 ## Purpose
 
-This design turns the current demo/runtime foundation into the first real Kubernetes-based execution path:
+This document describes the current Kubernetes runtime path for self-hosted Shclop production installs.
 
-- start agent runtimes as Kubernetes/Kata sandboxes;
-- attach runtime credentials through a secret-store abstraction;
-- provision per-agent workspace storage;
-- enforce baseline NetworkPolicy isolation;
-- execute real NanoClaw/OpenClaw work through a runtime-side adapter boundary;
-- document that this is an embedded MVP, not the final standalone production controller.
+The backend is the production control plane. It creates hardened Kubernetes resources for each OpenClaw/NanoClaw agent start and uses the runtime WebSocket as the readiness path back to the UI.
 
-## Current State
+## Scope
 
-The repository already has:
+Current runtime scope:
 
-- backend REST and WebSocket wiring for browser chat and runtime registration;
-- in-memory runtime registry and `task.run` routing;
-- demo runtime process that connects to `/runtime/ws` and streams demo events;
-- Docker demo sandbox provider for local demos;
-- hardened Kubernetes/Kata pod spec builder foundation;
-<<<<<<< HEAD
-- embedded Kubernetes provider MVP for sandbox lifecycle;
-- Kubernetes Secret store MVP fallback;
-- NetworkPolicy generation with broad backend/Vault allow rules unless custom CIDRs are configured;
-- runtime image skeletons for NanoClaw and OpenClaw.
+- Kubernetes sandbox provider selected with `sandbox.provider=kubernetes`.
+- Kata RuntimeClass configured through `agentRuntime.runtimeClassName` / `--agent-runtime-class`.
+- Per-agent runtime Pod.
+- Per-agent workspace PVC.
+- Per-agent runtime token Secret.
+- Per-agent NetworkPolicy.
+- OpenClaw and NanoClaw runtime images.
+- LLM gateway base URL, model, and API key SecretKeyRef passed to runtime pods.
 
-Remaining work includes Kubernetes pod status/watch/log collection, production Vault-backed secret delivery, full egress proxy enforcement, standalone controller extraction, and real NanoClaw/OpenClaw invocation beyond the adapter/subprocess boundary.
-=======
-- runtime image skeletons for NanoClaw and OpenClaw.
+Out of current scope:
 
-Missing pieces are Kubernetes API CRUD/watch/cleanup and real Claw execution inside the runtime.
->>>>>>> 9a8b099 (add agents.md to index)
+- standalone Kubernetes controller deployment;
+- workspace/team abstractions;
+- skills/catalogs;
+- MCP and third-party integration management;
+- policy approval workflows;
+- built-in LLM proxy;
+- LDAP/OIDC/header auth/SCIM.
 
-## Architecture Decision
+## Runtime start flow
 
-Use option 3: **embedded Kubernetes controller MVP with extraction-ready interfaces**.
-
-For the first implementation, the backend creates and deletes Kubernetes resources directly. The code must still be structured as if the controller could later move into a separate worker/controller:
-
-- public API stays backend-owned;
-- sandbox lifecycle goes through `SandboxProvider`;
-- runtime credentials go through `RuntimeSecretStore`;
-- Kubernetes resource building, applying, status mapping, and cleanup stay in small isolated components;
-- Kubernetes resources carry stable labels so a future standalone reconciler can adopt them.
-
-This avoids the full complexity of a distributed reconciliation system while preserving a migration path to one.
-
-## Runtime Start Flow
-
-1. `POST /api/agents/{id}/start` generates a runtime token and sandbox spec.
-2. Backend calls the Kubernetes `SandboxProvider`.
-3. Provider asks `RuntimeSecretStore` to store the token and returns a `SecretRef`.
-4. Provider creates or updates sandbox resources:
+1. User creates an agent with runtime `openclaw` or `nanoclaw` and an enabled model.
+2. User starts the agent.
+3. Backend verifies that the model is still enabled.
+4. Backend loads LLM gateway settings.
+5. Backend rejects the start if the agent has a model but the gateway is not enabled or has no base URL.
+6. Backend generates a runtime token.
+7. Kubernetes provider creates runtime resources:
    - workspace PVC;
+   - runtime token Secret;
    - NetworkPolicy;
-   - runtime Pod using the configured Kata `runtimeClassName`;
-   - secret delivery wiring based on `SecretRef`.
-5. Runtime Pod starts `shclop-runtime`.
-6. `shclop-runtime` reads its credential, connects to backend `/runtime/ws`, sends `runtime.hello`, and is registered by the backend registry.
-7. Agent becomes ready for tasks only after runtime WebSocket registration succeeds.
+   - hardened runtime Pod using the configured Kata RuntimeClass.
+8. Runtime pod starts `shclop-runtime`.
+9. Runtime connects to `/runtime/ws` with its agent ID and token.
+10. Browser chat sends tasks through the backend to the registered runtime.
 
-Pod `Running` is diagnostic state. Runtime WebSocket registration is the source of truth for task readiness.
+Pod `Running` is useful diagnostic state. Runtime WebSocket registration is the application readiness signal for chat routing.
 
-## Kubernetes Sandbox Resources
+## Runtime pod security posture
 
-The MVP lifecycle includes:
+Runtime pods should keep the hardened baseline:
 
-- Pod;
-- runtime credential reference;
-- NetworkPolicy;
-- PVC-backed workspace;
-- cleanup for all created resources.
-
-The Pod must use the existing hardened security posture:
-
-- configured Kata RuntimeClass;
-- no host network, PID, IPC, hostPath, privileged mode, host devices, or Kubernetes service account token;
-- read-only root filesystem where practical;
+- Kata RuntimeClass, for example `runtimeClassName: kata`;
+- no host network, host PID, or host IPC;
+- no privileged mode;
+- no hostPath mounts;
+- no host devices;
+- no mounted Kubernetes service account token;
 - dropped Linux capabilities;
-- workspace mounted at `/workspace`;
-- runtime env such as `SHCLOP_GATEWAY_URL`, `SHCLOP_AGENT_ID`, and `SHCLOP_AGENT_FLAVOR`.
+- read-only root filesystem where practical;
+- workspace mounted from the per-agent PVC.
 
-All resources should be labelled with at least:
+Docker/container images are packaging. Kata provides the production isolation boundary expected for agent workloads.
 
-- `app.kubernetes.io/name=shclop`;
-- `shclop.io/agent-id`;
-- `shclop.io/runtime-flavor`;
-- `shclop.io/sandbox-id`.
+## Runtime configuration
 
-These labels support cleanup, diagnostics, and future standalone reconciliation.
+The backend passes runtime configuration as pod environment and Secret references, including:
 
-## Runtime Credentials and Vault
+- `SHCLOP_GATEWAY_URL` for `/runtime/ws`;
+- `SHCLOP_AGENT_ID`;
+- `SHCLOP_AGENT_FLAVOR` (`openclaw` or `nanoclaw`);
+- runtime token reference;
+- LLM gateway base URL;
+- selected LLM model;
+- LLM gateway API key SecretKeyRef.
 
-The backend must not hard-code Kubernetes Secret as the production source of truth for runtime tokens. Introduce a credential abstraction:
-
-```go
-type RuntimeSecretStore interface {
-    PutRuntimeToken(agentID, token string, ttl time.Duration) (SecretRef, error)
-    DeleteRuntimeToken(agentID string) error
-}
-```
-
-`SecretRef` describes how the Pod should receive the credential without forcing the Kubernetes provider to keep handling raw token values.
-
-Initial implementations:
-
-1. **KubernetesSecretStore**
-   - development and single-node MVP fallback;
-   - creates a Kubernetes Secret;
-   - mounts the token as a file or env var.
-
-2. **VaultSecretStore**
-   - production-oriented path;
-   - backend writes the token to Vault, for example under `secret/shclop/runtimes/{agent_id}/token`;
-   - Pod receives the token through Vault Agent Injector, CSI Secret Store Driver, or External Secrets Operator;
-   - runtime reads `SHCLOP_RUNTIME_TOKEN_FILE` first and falls back to `SHCLOP_RUNTIME_TOKEN`.
-
-Documentation must state that Kubernetes Secret mode is an MVP/dev fallback, while Vault-backed delivery is the production recommendation. Future standalone controllers should operate on `SecretRef`, not raw token values.
-
-## NetworkPolicy
-
-The MVP should create a deny-by-default NetworkPolicy for runtime Pods and allow only the endpoints needed for first operation:
-
-- backend gateway/WebSocket endpoint;
-- secret delivery path if required by the chosen SecretStore integration;
-- explicit future egress/proxy exceptions.
-
-This MVP does not implement the full egress proxy. It lays down the per-runtime policy generator boundary and should document remaining production work: proxy enforcement, per-agent allowlists, private-range blocking, deny logs, and approval flows.
-
-## NetworkPolicy Configuration Interface
-
-Operators should not configure runtime egress by writing raw per-agent NetworkPolicy YAML. Shclop should expose a small sandbox configuration surface and generate Kubernetes NetworkPolicies from it.
-
-Example Helm/config shape:
-
-```yaml
-sandbox:
-<<<<<<< HEAD
-  kubernetes:
-    networkPolicy:
-      enabled: true
-      mode: restricted # disabled | restricted | custom
-      allowedCIDRs: "10.20.30.40/32,10.20.30.41/32"
-=======
-  networkPolicy:
-    enabled: true
-    mode: restricted # disabled | restricted | custom
-    allowBackend: true
-    allowVault: true
-    allowedEgress:
-      - name: corporate-proxy
-        cidr: 10.20.30.40/32
-        ports: [443]
-      - name: package-registry
-        dnsName: registry.example.com
-        ports: [443]
->>>>>>> 9a8b099 (add agents.md to index)
-```
-
-Supported modes:
-
-- `disabled`: do not create NetworkPolicy; development/debug only.
-<<<<<<< HEAD
-- `restricted`: default mode; creates the MVP NetworkPolicy with broad backend/Vault allow rules and no custom egress CIDRs. Stronger deny-by-default controls for Kubernetes API, cloud metadata endpoints, Postgres, and private ranges belong to the future egress proxy/policy layer.
-- `custom`: future extension for explicit operator-defined egress allow rules for corporate proxies, registries, or approved internal services.
-=======
-- `restricted`: default mode; deny-by-default, allow backend gateway, allow Vault/SecretStore delivery when configured, and deny Kubernetes API, cloud metadata endpoints, Postgres, and arbitrary private ranges.
-- `custom`: keep deny-by-default and add explicit operator-defined `allowedEgress` entries for corporate proxies, registries, or approved internal services.
->>>>>>> 9a8b099 (add agents.md to index)
-
-Internal config shape:
-
-```go
-type NetworkPolicySpec struct {
-    Enabled       bool
-    Mode          NetworkPolicyMode
-    AllowBackend  bool
-    AllowVault    bool
-    AllowedEgress []EgressRule
-}
-```
-
-The Kubernetes provider should delegate policy generation to a focused builder:
-
-```go
-BuildRuntimeNetworkPolicy(agentID, sandboxID string, spec NetworkPolicySpec) (*networkingv1.NetworkPolicy, error)
-```
-
-<<<<<<< HEAD
-MVP configuration is operator/admin-owned through Helm values or backend config and can apply globally or by runtime flavor. Agent-requested egress, approval prompts, dynamic policy updates, and richer per-egress objects belong to the later egress proxy/policy system, not this MVP.
-=======
-MVP configuration is operator/admin-owned through Helm values or backend config and can apply globally or by runtime flavor. Agent-requested egress, approval prompts, and dynamic policy updates belong to the later egress proxy/policy system, not this MVP.
->>>>>>> 9a8b099 (add agents.md to index)
+The backend stores only LLM gateway metadata: base URL, Secret name, and Secret key. Shclop does not proxy LLM calls.
 
 ## Workspace PVC
 
-Each sandbox gets a workspace PVC mounted at `/workspace`.
+Each runtime gets a workspace PVC mounted into the runtime pod.
 
-PVC lifecycle must be configurable:
+Important settings:
 
-- `delete` for ephemeral agents and tests;
-- `retain` for persistent workspaces.
-
-The default for early development can be `delete`; production configuration should make workspace retention explicit.
-
-## Stop and Cleanup
-
-`SandboxProvider.Stop(ctx, agentID)` deletes or releases resources in a deterministic order:
-
-1. runtime Pod;
-2. NetworkPolicy;
-3. runtime credential through `RuntimeSecretStore.DeleteRuntimeToken`;
-4. PVC according to the configured workspace retention policy.
-
-Cleanup should be idempotent. Missing resources are not fatal. Failures must be surfaced in logs/status and should leave enough labels for manual cleanup.
-
-## Claw Execution Contract
-
-The term “API” here means the **execution contract between `shclop-runtime` and the selected Claw runtime**, not a public HTTP API.
-
-When backend sends a `task.run` envelope to `shclop-runtime`, the runtime needs a defined way to pass that task into NanoClaw/OpenClaw and stream results back. That contract may be a CLI command, stdio protocol, local socket, or subprocess fallback.
-
-Public documentation found so far does not prove that NanoClaw and OpenClaw are fully CLI/API-compatible for runtime execution. NanoClaw is described as a lightweight OpenClaw alternative with similar core functionality, and it includes migration tooling from OpenClaw state, but that does not establish a shared task execution protocol.
-
-Therefore shclop should not assume compatibility as a fact. It should verify capabilities at runtime and hide the details behind an adapter interface.
-
-## Claw Adapter Layer
-
-Add a runtime-side adapter boundary:
-
-```go
-type ClawAdapter interface {
-    Run(ctx context.Context, task Task) (<-chan ClawEvent, error)
-}
+```yaml
+sandbox:
+  kubernetes:
+    workspace:
+      size: 10Gi
+      storageClassName: ""
+      retention: delete # delete | retain
 ```
 
-Preferred implementation:
+Use `retain` when workspaces must survive runtime cleanup. Use `delete` for development and disposable agents.
 
-- `ClawCompatibleAdapter`, parameterized by binary path/image/flavor, used when NanoClaw/OpenClaw expose the same verified execution contract.
+## NetworkPolicy
 
-Fallback structure:
+The provider creates NetworkPolicy resources for runtime pods when enabled:
 
-- if capability checks show different contracts, add flavor-specific adapters behind the same `ClawAdapter` interface;
-- if no structured contract is available, use a subprocess fallback that maps stdout/stderr/exit code into shclop events.
+```yaml
+sandbox:
+  kubernetes:
+    networkPolicy:
+      enabled: true
+      allowedCIDRs: "10.0.0.0/8"
+```
 
-Runtime startup should perform a capability/protocol check. If the selected binary does not support the expected contract, runtime should fail clearly and emit a `message.error`/diagnostic event rather than silently switching behavior.
+The current policy layer is intentionally simple. It is not a full egress proxy or approval system. Operators should keep allowed CIDRs narrow and route model access through the configured LLM gateway.
 
-## Runtime Task Flow
+## PostgreSQL and runtime state
 
-`shclop-runtime` task handling changes from demo events to real adapter execution:
+Production requires PostgreSQL for platform state. The Helm chart deploys bundled single-node PostgreSQL by default and can instead read an existing DSN Secret.
 
-1. receive `task.run` from backend;
-2. normalize payload into internal `Task`;
-3. select/configure `ClawAdapter` from `SHCLOP_AGENT_FLAVOR` and runtime config;
-4. call `adapter.Run(ctx, task)`;
-5. convert `ClawEvent` stream into existing shclop WebSocket envelope types:
-   - `message.started`;
-   - `message.delta`;
-   - `message.done`;
-   - `message.error`.
+Runtime workspace data belongs on the per-agent PVC. PostgreSQL stores platform state such as users, agents, model configuration, gateway settings, and activity.
 
-The adapter interface keeps runtime tests independent from real NanoClaw/OpenClaw binaries.
+## Observability
 
-## Error Handling
+The backend exposes:
 
-Sandbox start errors should map to actionable agent states/logs:
+- JSON stdout/stderr logs;
+- `GET /healthz`;
+- `GET /readyz`;
+- `GET /metrics` in Prometheus format.
 
-- invalid RuntimeClass;
-- PVC create/bind failure;
+Helm values document an external observability stack:
+
+- VictoriaMetrics k8s-stack;
+- VictoriaLogs;
+- Grafana;
+- 7-day retention default.
+
+## Failure cases to surface
+
+Runtime start failures should be visible in logs, metrics, and agent state where possible:
+
+- invalid or missing RuntimeClass;
+- runtime namespace missing;
+- insufficient RBAC for Pod/PVC/Secret/NetworkPolicy creation;
+- PVC create or bind failure;
 - image pull failure;
-- Pod scheduling failure;
-- SecretStore/Vault delivery failure;
-- runtime WebSocket auth failure;
-- runtime startup timeout.
+- pod scheduling failure;
+- runtime token Secret failure;
+- NetworkPolicy creation failure;
+- LLM gateway not configured;
+- selected model disabled;
+- runtime WebSocket authentication failure.
 
-Execution errors should preserve:
+## Design direction
 
-- task ID;
-- flavor;
-- adapter/capability failure;
-- process exit code or structured error code;
-- timeout/cancellation reason.
-
-## Testing Strategy
-
-Unit tests:
-
-- Kubernetes resource builders produce hardened Pod/PVC/NetworkPolicy specs;
-- `RuntimeSecretStore` implementations return expected `SecretRef` shapes;
-- cleanup is idempotent;
-- Claw adapter mapping converts stdout/stderr/exit codes or structured events into shclop events.
-
-Integration-style tests:
-
-- fake Kubernetes client verifies start/stop resource lifecycle;
-- fake runtime WebSocket registration remains the readiness signal;
-- fake Claw binary/protocol verifies real task flow without upstream dependencies.
-
-Existing demo flow tests should continue to pass.
-
-## Documentation Updates Required
-
-Update project documentation to make these boundaries explicit:
-
-- Kubernetes sandbox controller becomes an embedded MVP first, not a standalone production controller;
-- production extraction requires persistent desired state, reconciliation loop, finalizers/retries, standalone RBAC/deployment, and durable status handling;
-- runtime token delivery goes through `RuntimeSecretStore` and `SecretRef`;
-- Kubernetes Secret mode is development/MVP fallback;
-- Vault-backed secret delivery is the production recommendation;
-- real Claw execution uses a `ClawAdapter` boundary because NanoClaw/OpenClaw runtime-execution compatibility is not confirmed by current public docs;
-- subprocess fallback is a compatibility bridge, not the desired long-term protocol.
-
-## Out of Scope for This MVP
-
-- standalone Kubernetes controller deployment;
-- durable desired-state database and full reconciliation loop;
-- finalizers and advanced orphan recovery;
-- full egress proxy implementation;
-- full Postgres platform schema;
-- complete Vault operator setup;
-- signed/pinned reproducible runtime images;
-- proving NanoClaw/OpenClaw protocol compatibility beyond runtime capability checks.
+The embedded Kubernetes provider is the current production path. A future standalone controller could adopt the same resource labels and lifecycle concepts, but it is not part of the current product scope.

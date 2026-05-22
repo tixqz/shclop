@@ -14,10 +14,20 @@ import (
 func TestRuntimeWebSocketAcceptsRuntimeHello(t *testing.T) {
 	server := newTestServerWithConfig(config.Config{Store: "inmemory"})
 	adminToken := loginAsAdmin(t, server)
-	created := doJSON(t, server, http.MethodPost, "/api/agents", map[string]string{"name": "Runtime"}, adminToken)
+	created := doJSON(t, server, http.MethodPost, "/api/agents", map[string]any{
+		"name":    "Runtime",
+		"runtime": "nanoclaw",
+		"model":   "",
+	}, adminToken)
 	agentID := assertJSONField(t, created.Body.Bytes(), "id", "")
-	started := doJSON(t, server, http.MethodPost, "/api/agents/"+agentID+"/start", map[string]string{"runtime": "openclaw"}, adminToken)
-	runtimeToken := assertJSONField(t, started.Body.Bytes(), "runtime_token", "")
+	started := doJSON(t, server, http.MethodPost, "/api/agents/"+agentID+"/start", nil, adminToken)
+	if got := assertJSONField(t, started.Body.Bytes(), "id", ""); got != agentID {
+		t.Fatalf("expected start response agent id %s, got %q", agentID, got)
+	}
+	runtimeToken := server.tokens[agentID]
+	if runtimeToken == "" {
+		t.Fatal("expected runtime token")
+	}
 	testServer := httptest.NewServer(server.Handler())
 	t.Cleanup(testServer.Close)
 
@@ -32,7 +42,7 @@ func TestRuntimeWebSocketAcceptsRuntimeHello(t *testing.T) {
 	if err := conn.WriteJSON(gateway.Envelope{
 		Type:    "runtime.hello",
 		AgentID: agentID,
-		Payload: map[string]any{"runtime": "openclaw"},
+		Payload: map[string]any{"runtime": "nanoclaw"},
 	}); err != nil {
 		t.Fatalf("write runtime hello: %v", err)
 	}

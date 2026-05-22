@@ -1,0 +1,104 @@
+{{- if and .Values.postgresql.bundled (not .Values.postgresql.existingSecret.name) -}}
+{{- $fullname := include "shclop.fullname" . -}}
+{{- $pgPassword := .Values.postgresql.password -}}
+{{- if not $pgPassword -}}
+  {{- $existingSecret := (lookup "v1" "Secret" .Release.Namespace (printf "%s-postgres" $fullname)) -}}
+  {{- if $existingSecret -}}
+    {{- $pgPassword = index $existingSecret.data "password" | b64dec -}}
+  {{- else -}}
+    {{- $pgPassword = randAlphaNum 24 -}}
+  {{- end -}}
+{{- end -}}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $fullname }}-postgres
+  labels:
+    {{- include "shclop.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  password: {{ $pgPassword | quote }}
+  dsn: {{ printf "postgres://%s:%s@%s-postgres:5432/%s?sslmode=disable" .Values.postgresql.user $pgPassword $fullname .Values.postgresql.database | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-postgres
+  labels:
+    {{- include "shclop.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.postgresql.persistence.size }}
+  {{- with .Values.postgresql.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-postgres
+  labels:
+    {{- include "shclop.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "shclop.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgresql
+  template:
+    metadata:
+      labels:
+        {{- include "shclop.labels" . | nindent 8 }}
+        app.kubernetes.io/component: postgresql
+    spec:
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgresql.database }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgresql.user }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-postgres
+                  key: password
+          ports:
+            - containerPort: 5432
+              name: postgres
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ $fullname }}-postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-postgres
+  labels:
+    {{- include "shclop.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "shclop.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+{{- end }}

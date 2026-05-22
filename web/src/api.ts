@@ -1,280 +1,304 @@
-type LoginResponse = {
-  token?: string;
-  user?: User;
-};
+// ── API contract for the simplified OpenClaw self-hosted control plane ──
+// Types mirror the backend responses exactly. Bearer token stored in localStorage.
 
 export type User = {
   id: string;
   username: string;
-  email?: string;
-  display_name?: string;
-  tenant_id?: string;
-  team_ids?: string[];
-  roles?: string[];
+  role: 'admin' | 'user';
+  disabled: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Agent = {
   id: string;
-  owner_id: string;
-  tenant_id?: string;
+  owner_user_id: string;
   name: string;
-  model?: string;
-  purpose?: string;
-  tags?: string[];
+  runtime: 'openclaw' | 'nanoclaw';
+  model: string;
   state: string;
-  latest_revision_id?: string;
-  active_revision_id?: string;
-  security_status?: string;
   created_at: string;
+  updated_at: string;
+  last_error?: string;
 };
 
-export type Workspace = {
+export type LLMModel = {
   id: string;
-  owner_id: string;
-  name: string;
-  description?: string;
+  display_name: string;
+  provider_model: string;
+  enabled: boolean;
   created_at: string;
   updated_at: string;
 };
 
-export type Skill = {
-  id: string;
-  owner_id: string;
-  tenant_id?: string;
-  name: string;
-  source_url?: string;
-  tags?: string[];
-  latest_revision_id: string;
-  active_revision_id: string;
-  security_status?: string;
-  created_at: string;
+export type LLMGatewaySettings = {
+  enabled: boolean;
+  base_url: string;
+  secret_name: string;
+  secret_key: string;
   updated_at: string;
-};
-
-export type CreateSkillInput = {
-  name: string;
-  source_url?: string;
-  content?: string;
-  tags?: string[];
-};
-
-export type SecurityPolicy = {
-  mode: string;
-  version: number;
-};
-
-export type StartAgentResponse = {
-  agent: Agent;
-  runtime: string;
-  provider?: string;
-  runtime_id?: string;
-  runtime_url: string;
-};
-
-export type ActivityEntry = {
-  time: string;
-  type: string;
-  actor_id?: string;
-  agent_id?: string;
-  message?: string;
-  details?: Record<string, unknown>;
 };
 
 export type AdminOverview = {
-  identity_provider: string;
-  sandbox_provider: string;
-  runtime_images: Record<string, string>;
-  users: Array<{
-    email: string;
-    subject: string;
-    display_name?: string;
-    tenant_id: string;
-    team_ids?: string[];
-    roles?: string[];
-    groups?: string[];
-  }>;
-  activity: ActivityEntry[];
+  runtime: {
+    provider: string;
+    namespace: string;
+    runtime_class_name: string;
+    images: Record<string, string>;
+  };
+  observability: {
+    metrics_enabled: boolean;
+    logging_enabled: boolean;
+    grafana_url: string;
+  };
+  health: {
+    healthz: string;
+    readyz: string;
+  };
 };
 
-export type StreamEnvelope = {
-  type?: string;
-  agent_id?: string;
-  session_id?: string;
-  message_id?: string;
-  seq?: number;
-  payload?: Record<string, unknown>;
+// ── Token helpers ──
+
+const TOKEN_KEY = 'shclop_token';
+
+export function getStoredToken(): string {
+  return localStorage.getItem(TOKEN_KEY) ?? '';
+}
+
+export function storeToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+// ── Authenticated fetch wrapper ──
+
+async function apiFetch<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const token = getStoredToken();
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string> ?? {}),
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  // Only set Content-Type if we have a body that isn't FormData
+  if (options.body && typeof options.body === 'string') {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  const res = await fetch(path, { ...options, headers });
+
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body.error) msg = body.error;
+      else if (body.message) msg = body.message;
+    } catch {
+      // ignore parse errors
+    }
+    throw new Error(msg);
+  }
+
+  // 204 No Content
+  if (res.status === 204) return undefined as unknown as T;
+
+  return (await res.json()) as T;
+}
+
+// ── Auth ──
+
+export async function login(
+  username: string,
+  password: string,
+): Promise<{ user: User; token: string }> {
+  const data = await apiFetch<{ user: User; token: string }>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+  storeToken(data.token);
+  return data;
+}
+
+export async function getMe(): Promise<{ user: User }> {
+  return apiFetch<{ user: User }>('/api/me');
+}
+
+// ── Agents ──
+
+export async function listAgents(): Promise<Agent[]> {
+  return apiFetch<Agent[]>('/api/agents');
+}
+
+export async function createAgent(body: {
+  name: string;
+  runtime: string;
+  model: string;
+}): Promise<Agent> {
+  return apiFetch<Agent>('/api/agents', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function startAgent(id: string): Promise<Agent> {
+  return apiFetch<Agent>(`/api/agents/${encodeURIComponent(id)}/start`, {
+    method: 'POST',
+  });
+}
+
+export async function stopAgent(id: string): Promise<Agent> {
+  return apiFetch<Agent>(`/api/agents/${encodeURIComponent(id)}/stop`, {
+    method: 'POST',
+  });
+}
+
+// ── Admin: Users ──
+
+export async function adminListUsers(): Promise<User[]> {
+  return apiFetch<User[]>('/api/admin/users');
+}
+
+export async function adminCreateUser(body: {
+  username: string;
+  password: string;
+  role: string;
+}): Promise<User> {
+  return apiFetch<User>('/api/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function adminPatchUser(
+  id: string,
+  body: { disabled?: boolean; role?: string },
+): Promise<User> {
+  return apiFetch<User>(`/api/admin/users/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+// ── Admin: Models ──
+
+export async function adminListModels(): Promise<LLMModel[]> {
+  return apiFetch<LLMModel[]>('/api/admin/models');
+}
+
+export async function adminCreateModel(body: {
+  display_name: string;
+  provider_model: string;
+  enabled?: boolean;
+}): Promise<LLMModel> {
+  return apiFetch<LLMModel>('/api/admin/models', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function adminPatchModel(
+  id: string,
+  body: { display_name?: string; provider_model?: string; enabled?: boolean },
+): Promise<LLMModel> {
+  return apiFetch<LLMModel>(`/api/admin/models/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+// ── Admin: LLM Gateway ──
+
+export async function adminGetGateway(): Promise<LLMGatewaySettings> {
+  return apiFetch<LLMGatewaySettings>('/api/admin/llm-gateway');
+}
+
+export async function adminPatchGateway(
+  body: Partial<LLMGatewaySettings>,
+): Promise<LLMGatewaySettings> {
+  return apiFetch<LLMGatewaySettings>('/api/admin/llm-gateway', {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+// ── Admin: Overview ──
+
+export async function adminGetOverview(): Promise<AdminOverview> {
+  return apiFetch<AdminOverview>('/api/admin/overview');
+}
+
+// ── Health ──
+
+export async function getHealthz(): Promise<string> {
+  const res = await fetch('/healthz');
+  return res.text();
+}
+
+export async function getReadyz(): Promise<string> {
+  const res = await fetch('/readyz');
+  return res.text();
+}
+
+// ── WebSocket chat ──
+
+export type ChatEvent = {
+  type: string;
+  text?: string;
+  error?: string;
+  done?: boolean;
   [key: string]: unknown;
 };
 
-function wsUrl(path: string): string {
-  const url = new URL(path, window.location.href);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  return url.toString();
-}
+export function connectChat(
+  agentId: string,
+  _token: string,
+  onEvent: (ev: ChatEvent) => void,
+  onError: (err: string) => void,
+  onClose: () => void,
+): () => void {
+  const params = new URLSearchParams({ agent_id: agentId });
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${protocol}//${window.location.host}/ws?${params}`;
 
-export async function login(username: string, password: string): Promise<{ token: string; user: User }> {
-  const response = await fetch('/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
+  const ws = new WebSocket(url);
 
-  if (!response.ok) {
-    throw new Error(`Login failed (${response.status})`);
-  }
-
-  const data = (await response.json()) as LoginResponse;
-  if (!data.token) {
-    throw new Error('Login response missing token');
-  }
-  if (!data.user) {
-    throw new Error('Login response missing user');
-  }
-  return { token: data.token, user: data.user };
-}
-
-export async function listAgents(token: string): Promise<Agent[]> {
-  const response = await fetch('/api/agents', { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) {
-    throw new Error(`List agents failed (${response.status})`);
-  }
-  return (await response.json()) as Agent[];
-}
-
-export async function listWorkspaces(token: string): Promise<Workspace[]> {
-  const response = await fetch('/api/workspaces', { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error(`List workspaces failed (${response.status})`);
-  return (await response.json()) as Workspace[];
-}
-
-export async function createWorkspace(token: string, name: string, description?: string): Promise<Workspace> {
-  const response = await fetch('/api/workspaces', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description }),
-  });
-  if (!response.ok) throw new Error(`Create workspace failed (${response.status})`);
-  return (await response.json()) as Workspace;
-}
-
-export async function listSkills(token: string): Promise<Skill[]> {
-  const response = await fetch('/api/skills', { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error(`List skills failed (${response.status})`);
-  return (await response.json()) as Skill[];
-}
-
-export async function createSkill(token: string, input: CreateSkillInput): Promise<Skill> {
-  const response = await fetch('/api/skills', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
-  if (!response.ok) throw new Error(`Create skill failed (${response.status})`);
-  return (await response.json()) as Skill;
-}
-
-export async function getSecurityPolicy(token: string): Promise<SecurityPolicy> {
-  const response = await fetch('/api/security/policy', { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error(`Get security policy failed (${response.status})`);
-  return (await response.json()) as SecurityPolicy;
-}
-
-export async function createAgent(token: string, name: string): Promise<Agent> {
-  const response = await fetch('/api/agents', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ name }),
-  });
-  if (!response.ok) {
-    throw new Error(`Create agent failed (${response.status})`);
-  }
-  return (await response.json()) as Agent;
-}
-
-export async function startAgent(token: string, agentID: string, runtime: string): Promise<StartAgentResponse> {
-  const response = await fetch(`/api/agents/${encodeURIComponent(agentID)}/start`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ runtime }),
-  });
-  if (!response.ok) {
-    throw new Error(`Start agent failed (${response.status})`);
-  }
-  return (await response.json()) as StartAgentResponse;
-}
-
-export async function getActivity(token: string): Promise<ActivityEntry[]> {
-  const response = await fetch('/api/activity', { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) {
-    throw new Error(`Activity failed (${response.status})`);
-  }
-  const data = (await response.json()) as { activity?: ActivityEntry[] };
-  return data.activity ?? [];
-}
-
-export async function getAdminOverview(token: string): Promise<AdminOverview> {
-  const response = await fetch('/api/admin/overview', { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) {
-    throw new Error(`Admin overview failed (${response.status})`);
-  }
-  return (await response.json()) as AdminOverview;
-}
-
-type StreamLifecycle = {
-  onOpen?: () => void;
-  onError?: (message: string) => void;
-  onClose?: () => void;
-};
-
-export function streamAgentChat(
-  agentID: string,
-  text: string,
-  onEvent: (event: StreamEnvelope) => void,
-  lifecycle: StreamLifecycle = {},
-) {
-  const socket = new WebSocket(wsUrl('/ws'));
-  const envelope: StreamEnvelope = {
-    type: 'user.message',
-    agent_id: agentID,
-    session_id: `session-${crypto.randomUUID?.() ?? fallbackId()}`,
-    message_id: `message-${crypto.randomUUID?.() ?? fallbackId()}`,
-    payload: { text },
+  ws.onopen = () => {
+    // ready to send
   };
 
-  socket.addEventListener('open', () => {
-    lifecycle.onOpen?.();
-    socket.send(JSON.stringify(envelope));
-  });
-
-  socket.addEventListener('message', (event) => {
+  ws.onmessage = (msg) => {
     try {
-      onEvent(JSON.parse(event.data as string));
+      const data = JSON.parse(msg.data) as ChatEvent;
+      onEvent(data);
     } catch {
-      onEvent({ type: 'stream.error', payload: { text: 'Invalid JSON event' } });
+      onError('Invalid message from server');
     }
-  });
+  };
 
-  socket.addEventListener('error', () => {
-    lifecycle.onError?.('WebSocket connection error');
-  });
+  ws.onerror = () => {
+    onError('WebSocket connection error');
+  };
 
-  socket.addEventListener('close', () => {
-    lifecycle.onClose?.();
-  });
+  ws.onclose = () => {
+    onClose();
+  };
 
   return () => {
-    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-      socket.close();
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      ws.close();
     }
   };
 }
 
-function fallbackId(): string {
-  return Math.random().toString(36).slice(2, 10);
+export function sendChatMessage(
+  ws: WebSocket,
+  text: string,
+): void {
+  ws.send(JSON.stringify({ text }));
 }

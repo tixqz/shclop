@@ -4,97 +4,170 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mipopov/shclop/internal/identity"
+	"github.com/mipopov/shclop/internal/domain"
+	"golang.org/x/crypto/bcrypt"
 )
 
-func TestMemoryAuthLogin(t *testing.T) {
-	a := NewMemory()
-	user, token, err := a.Login(context.Background(), "admin", "admin")
-	if err != nil {
-		t.Fatal(err)
+// testStore implements both UserStore and PasswordHasher for testing.
+type testStore struct {
+	users     map[string]domain.User // keyed by username
+	passwords map[string]string      // username -> bcrypt hash
+}
+
+func newTestStore() *testStore {
+	return &testStore{
+		users:     make(map[string]domain.User),
+		passwords: make(map[string]string),
 	}
-	if user.Username != "admin" {
-		t.Fatalf("unexpected user %q", user.Username)
+}
+
+func (s *testStore) addUser(id, username, password, role string) {
+	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	s.users[username] = domain.User{
+		ID:       id,
+		Username: username,
+		Role:     role,
+	}
+	s.passwords[username] = string(hash)
+}
+
+func (s *testStore) GetUserByUsername(_ context.Context, username string) (domain.User, error) {
+	u, ok := s.users[username]
+	if !ok {
+		return domain.User{}, errNotFound
+	}
+	return u, nil
+}
+
+func (s *testStore) GetUser(_ context.Context, userID string) (domain.User, error) {
+	for _, u := range s.users {
+		if u.ID == userID {
+			return u, nil
+		}
+	}
+	return domain.User{}, errNotFound
+}
+
+func (s *testStore) GetPasswordHash(_ context.Context, username string) (string, error) {
+	h, ok := s.passwords[username]
+	if !ok {
+		return "", errNotFound
+	}
+	return h, nil
+}
+
+func (s *testStore) SetPasswordHash(_ context.Context, username, hash string) error {
+	s.passwords[username] = hash
+	return nil
+}
+
+var errNotFound = &testError{"not found"}
+
+type testError struct{ msg string }
+
+func (e *testError) Error() string { return e.msg }
+
+func TestLoginSuccess(t *testing.T) {
+	store := newTestStore()
+	store.addUser("user-1", "alice", "password123", "admin")
+	svc := NewService(store, store)
+
+	user, token, err := svc.Login(context.Background(), "alice", "password123")
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+	if user.Username != "alice" {
+		t.Fatalf("expected username alice, got %q", user.Username)
 	}
 	if token == "" {
 		t.Fatal("expected non-empty token")
 	}
-	resolved, ok := a.Resolve(token)
+
+	// Resolve token
+	resolved, ok := svc.Resolve(token)
 	if !ok {
 		t.Fatal("expected token to resolve")
 	}
 	if resolved.ID != user.ID {
-		t.Fatalf("expected %q got %q", user.ID, resolved.ID)
+		t.Fatalf("expected user ID %q, got %q", user.ID, resolved.ID)
 	}
 }
 
-func TestMemoryAuthRejectsBadPassword(t *testing.T) {
-	a := NewMemory()
-	_, _, err := a.Login(context.Background(), "admin", "wrong")
+func TestLoginInvalidPassword(t *testing.T) {
+	store := newTestStore()
+	store.addUser("user-1", "alice", "password123", "user")
+	svc := NewService(store, store)
+
+	_, _, err := svc.Login(context.Background(), "alice", "wrongpassword")
 	if err == nil {
-		t.Fatal("expected bad password error")
+		t.Fatal("expected login to fail")
 	}
 }
 
-func TestMemoryAuthRejectsUnknownToken(t *testing.T) {
-	a := NewMemory()
-	if _, ok := a.Resolve("missing-token"); ok {
-		t.Fatal("expected unknown token to not resolve")
+func TestLoginUnknownUser(t *testing.T) {
+	store := newTestStore()
+	svc := NewService(store, store)
+
+	_, _, err := svc.Login(context.Background(), "unknown", "password")
+	if err == nil {
+		t.Fatal("expected login to fail")
 	}
 }
 
-func TestMemoryAuthUsesIdentityProvider(t *testing.T) {
-	provider := staticIdentityProvider{identity: identity.Identity{
-		Subject: "oidc|alice",
-		Email:   "alice@acme.test",
-		Name:    "Alice Admin",
-		Claims:  map[string]string{"tenant": "acme", "teams": "platform", "roles": "admin"},
-	}}
-	a := NewWithIdentity(provider, identity.StaticOrganizationMapper{})
-	user, token, err := a.Login(context.Background(), "alice@acme.test", "alice")
+func TestResolveInvalidToken(t *testing.T) {
+	store := newTestStore()
+	svc := NewService(store, store)
+
+	_, ok := svc.Resolve("invalid-token")
+	if ok {
+		t.Fatal("expected invalid token to not resolve")
+	}
+}
+
+func TestLoginDisabledUser(t *testing.T) {
+	store := newTestStore()
+	hash, _ := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.DefaultCost)
+	store.users["disabled"] = domain.User{
+		ID:       "user-disabled",
+		Username: "disabled",
+		Role:     "user",
+		Disabled: true,
+	}
+	store.passwords["disabled"] = string(hash)
+	svc := NewService(store, store)
+
+	_, _, err := svc.Login(context.Background(), "disabled", "password")
+	if err == nil {
+		t.Fatal("expected login to fail for disabled user")
+	}
+}
+
+func TestTokenIsolation(t *testing.T) {
+	store := newTestStore()
+	store.addUser("user-1", "alice", "pass1", "user")
+	store.addUser("user-2", "bob", "pass2", "admin")
+	svc := NewService(store, store)
+
+	_, aliceToken, err := svc.Login(context.Background(), "alice", "pass1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if token == "" {
-		t.Fatal("expected token")
+	_, bobToken, err := svc.Login(context.Background(), "bob", "pass2")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if user.ID != "oidc|alice" || user.Username != "alice@acme.test" || user.TenantID != "acme" {
-		t.Fatalf("unexpected user: %#v", user)
-	}
-	if !contains(user.Roles, "admin") || !contains(user.TeamIDs, "platform") {
-		t.Fatalf("expected mapped roles and teams: %#v", user)
-	}
-	resolved, ok := a.Resolve(token)
-	if !ok || resolved.ID != user.ID || resolved.TenantID != "acme" {
-		t.Fatalf("token did not resolve mapped user: %#v ok=%v", resolved, ok)
-	}
-}
 
-func TestMemoryAuthPropagatesCancelledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	a := NewWithIdentity(staticIdentityProvider{}, identity.StaticOrganizationMapper{})
-	if _, _, err := a.Login(ctx, "alice@acme.test", "alice"); err == nil {
-		t.Fatal("expected canceled context error")
+	aliceUser, ok := svc.Resolve(aliceToken)
+	if !ok || aliceUser.Username != "alice" {
+		t.Fatalf("expected alice token to resolve to alice")
 	}
-}
-
-type staticIdentityProvider struct{ identity identity.Identity }
-
-func (p staticIdentityProvider) Name() string { return "static" }
-
-func (p staticIdentityProvider) Authenticate(ctx context.Context, request identity.AuthRequest) (identity.Identity, error) {
-	if err := ctx.Err(); err != nil {
-		return identity.Identity{}, err
+	bobUser, ok := svc.Resolve(bobToken)
+	if !ok || bobUser.Username != "bob" {
+		t.Fatalf("expected bob token to resolve to bob")
 	}
-	return p.identity, nil
-}
 
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
+	// Tokens should not be interchangeable
+	if aliceUser.ID == bobUser.ID {
+		t.Fatal("expected different users")
 	}
-	return false
 }

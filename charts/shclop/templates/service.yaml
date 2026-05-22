@@ -1,21 +1,28 @@
+{{- $fullname := include "shclop.fullname" . -}}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}-backend
+  name: {{ $fullname }}-backend
   labels:
-    app.kubernetes.io/name: shclop
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "shclop.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend
-    app.kubernetes.io/part-of: shclop
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+  {{- if or .Values.service.annotations (and .Values.service.prometheusScrape (not .Values.monitoring.serviceMonitor.enabled)) }}
+  annotations:
+    {{- if and .Values.service.prometheusScrape (not .Values.monitoring.serviceMonitor.enabled) }}
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ .Values.service.port | quote }}
+    prometheus.io/path: "/metrics"
+    {{- end }}
+    {{- with .Values.service.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
   selector:
-    app.kubernetes.io/name: shclop
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "shclop.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: backend
   ports:
     - name: http
       port: {{ .Values.service.port }}
-      targetPort: 8080
+      targetPort: http

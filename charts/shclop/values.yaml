@@ -1,3 +1,9 @@
+# -- Number of backend replicas
+replicas: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
 image:
   repository: shclop
   tag: latest
@@ -6,43 +12,121 @@ image:
 service:
   type: ClusterIP
   port: 8080
+  # -- Additional annotations for the Service
+  annotations: {}
+  # -- Add prometheus scrape annotations when serviceMonitor is disabled
+  prometheusScrape: true
 
-config:
-  logLevel: info
-  metrics: true
-  store: inmemory
-  postgresDSNSecret:
+monitoring:
+  serviceMonitor:
+    # -- Create a ServiceMonitor CR for the backend
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    # -- Additional labels for the ServiceMonitor resource
+    labels: {}
+
+postgresql:
+  # -- Deploy a bundled single-node PostgreSQL instance
+  # -- Ignored when postgresql.existingSecret.name is set
+  bundled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  # -- PostgreSQL database name (bundled mode)
+  database: shclop
+  # -- PostgreSQL user (bundled mode)
+  user: shclop
+  # -- PostgreSQL password (bundled mode; auto-generated if empty)
+  password: ""
+  # -- Reference an existing Secret containing the full PostgreSQL DSN
+  # -- The Secret must have a key holding the DSN string (e.g. "dsn").
+  # -- When set, bundled is ignored and the backend reads the DSN from this Secret.
+  existingSecret:
     name: ""
     key: dsn
-
-identity:
-  provider: local
-  mockYAMLPath: config/identity.mock.yaml
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+  persistence:
+    size: 8Gi
+    storageClass: ""
 
 sandbox:
-  provider: mock
-  dockerGatewayURL: ws://host.docker.internal:8080/runtime/ws
-  runtimeImagePrefix: shclop-runtime
+  # -- Sandbox provider (must be "kubernetes" for production)
+  provider: kubernetes
   kubernetes:
-    namespace: default
-    gatewayURL: ws://shclop-backend:8080/runtime/ws
+    # -- Namespace where sandbox (agent) pods are created
+    namespace: shclop-sandbox
+    # -- WebSocket gateway URL for sandbox communication (empty = release backend Service)
+    gatewayURL: ""
     workspace:
+      # -- Persistent volume size per workspace
       size: 10Gi
+      # -- Storage class for workspace PVCs (empty = cluster default)
       storageClassName: ""
+      # -- Workspace retention policy
       retention: delete
-    secretStore: kubernetes
     networkPolicy:
+      # -- Enable network policy enforcement for sandbox pods
       enabled: true
-      mode: restricted
-      allowedCIDRs: ""
+      # -- Comma-separated list of allowed egress CIDRs
+      allowedCIDRs: "0.0.0.0/0"
+    # -- Secret store backend (immutable: "kubernetes")
+    secretStore: kubernetes
 
 agentRuntime:
+  # -- Kata Containers RuntimeClass name (MANDATORY — must be non-empty)
   runtimeClassName: kata
   images:
-    nanoclaw: shclop-runtime-nanoclaw:latest
+    # -- OpenClaw runtime container image
     openclaw: shclop-runtime-openclaw:latest
+    # -- NanoClaw runtime container image
+    nanoclaw: shclop-runtime-nanoclaw:latest
 
-dependencies:
-  bundledPostgres: true
-  bundledVault: true
-  bundledMinIO: true
+llmGateway:
+  # -- Base URL for the LLM gateway
+  baseURL: ""
+  # -- Reference an existing Kubernetes Secret containing the LLM gateway API key
+  existingSecret:
+    name: ""
+    # -- Key within the Secret that holds the API key
+    key: api-key
+
+bootstrapAdmin:
+  # -- Initial admin username created on first start
+  username: admin
+  # -- Reference an existing Secret containing the admin password
+  # -- When set, bootstrapAdmin.password is ignored
+  existingSecret:
+    name: ""
+    # -- Key within the Secret that holds the password
+    key: password
+  # -- Admin password (used when existingSecret.name is empty; auto-generated if both empty)
+  password: ""
+
+observability:
+  # -- Default retention period in days for logs and metrics
+  retentionDays: 7
+  # -- VictoriaMetrics k8s-stack guidance (NOT installed by this chart)
+  victoriaMetrics:
+    enabled: false
+    # -- Helm release name of the installed vm-k8s-stack chart
+    releaseName: victoria-metrics
+  # -- VictoriaLogs guidance (NOT installed by this chart)
+  victoriaLogs:
+    enabled: false
+    # -- Helm release name of the installed victoria-logs chart
+    releaseName: victoria-logs
+  # -- Grafana guidance (NOT installed by this chart)
+  grafana:
+    enabled: false
+    # -- Helm release name of the installed grafana chart
+    releaseName: grafana
+    # -- External URL shown in the admin UI
+    url: ""

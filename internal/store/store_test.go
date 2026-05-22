@@ -3,102 +3,332 @@ package store
 import (
 	"context"
 	"testing"
-
-	"github.com/mipopov/shclop/internal/domain"
 )
+
+func TestMemoryStoreCreatesAndListsUsers(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+
+	u1, err := s.CreateUser(ctx, "alice", "hash1", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u1.ID == "" {
+		t.Fatal("expected user ID")
+	}
+	if u1.Username != "alice" {
+		t.Fatalf("expected username alice, got %q", u1.Username)
+	}
+	if u1.Role != "admin" {
+		t.Fatalf("expected role admin, got %q", u1.Role)
+	}
+	if u1.Disabled {
+		t.Fatal("expected user not disabled")
+	}
+
+	u2, err := s.CreateUser(ctx, "bob", "hash2", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u2.Username != "bob" || u2.Role != "user" {
+		t.Fatalf("unexpected user: %#v", u2)
+	}
+
+	// Duplicate username
+	_, err = s.CreateUser(ctx, "alice", "hash3", "admin")
+	if err != ErrConflict {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+
+	// List
+	users, err := s.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("expected 2 users, got %d", len(users))
+	}
+
+	// Get by username
+	got, err := s.GetUserByUsername(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != u1.ID {
+		t.Fatalf("expected user %q, got %q", u1.ID, got.ID)
+	}
+
+	// Get by ID
+	got, err = s.GetUser(ctx, u1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Username != "alice" {
+		t.Fatalf("expected username alice, got %q", got.Username)
+	}
+}
+
+func TestMemoryStoreUpdateUser(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, "alice", "hash", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	disabled := true
+	updated, err := s.UpdateUser(ctx, u.ID, &disabled, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Disabled {
+		t.Fatal("expected user to be disabled")
+	}
+
+	role := "admin"
+	updated, err = s.UpdateUser(ctx, u.ID, nil, &role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Role != "admin" {
+		t.Fatalf("expected role admin, got %q", updated.Role)
+	}
+	if !updated.Disabled {
+		t.Fatal("expected user to still be disabled")
+	}
+
+	// NotFound
+	_, err = s.UpdateUser(ctx, "nonexistent", nil, nil)
+	if err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
 
 func TestMemoryStoreCreatesAndListsAgents(t *testing.T) {
 	s := NewMemory()
 	ctx := context.Background()
 
-	agent1, err := s.CreateAgent(ctx, "user-1", "Researcher")
+	// First create a user
+	user, err := s.CreateUser(ctx, "testuser", "hash", "user")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent1.ID == "" {
+
+	a1, err := s.CreateAgent(ctx, user.ID, "Researcher", "nanoclaw", "gpt-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a1.ID == "" {
 		t.Fatal("expected agent ID")
 	}
-	if agent1.State != "idle" {
-		t.Fatalf("unexpected state %q", agent1.State)
+	if a1.State != "idle" {
+		t.Fatalf("unexpected state %q", a1.State)
 	}
-	if agent1.CreatedAt.IsZero() {
-		t.Fatal("expected CreatedAt")
+	if a1.OwnerUserID != user.ID {
+		t.Fatalf("unexpected owner %q", a1.OwnerUserID)
+	}
+	if a1.Runtime != "nanoclaw" {
+		t.Fatalf("unexpected runtime %q", a1.Runtime)
 	}
 
-	agent2, err := s.CreateAgent(ctx, "user-2", "Builder")
+	a2, err := s.CreateAgent(ctx, user.ID, "Builder", "openclaw", "claude-3")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent2.OwnerID != "user-2" {
-		t.Fatalf("unexpected owner %q", agent2.OwnerID)
+	if a2.OwnerUserID != user.ID {
+		t.Fatalf("unexpected owner %q", a2.OwnerUserID)
 	}
 
-	agents, err := s.ListAgents(ctx, "user-1")
+	agents, err := s.ListAgents(ctx, user.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(agents) != 1 {
-		t.Fatalf("expected 1 agent, got %d", len(agents))
-	}
-	if agents[0].Name != "Researcher" {
-		t.Fatalf("unexpected name %q", agents[0].Name)
-	}
-	if agents[0].OwnerID != "user-1" {
-		t.Fatalf("unexpected owner %q", agents[0].OwnerID)
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(agents))
 	}
 
-	otherAgents, err := s.ListAgents(ctx, "user-2")
+	// Test isolation
+	otherUser, err := s.CreateUser(ctx, "other", "hash", "user")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(otherAgents) != 1 {
-		t.Fatalf("expected 1 agent for user-2, got %d", len(otherAgents))
+	otherAgents, err := s.ListAgents(ctx, otherUser.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if otherAgents[0].Name != "Builder" {
-		t.Fatalf("unexpected name %q", otherAgents[0].Name)
-	}
-
-	if agents[0].OwnerID == otherAgents[0].OwnerID {
-		t.Fatal("expected no cross-user leakage")
+	if len(otherAgents) != 0 {
+		t.Fatalf("expected 0 agents for other user, got %d", len(otherAgents))
 	}
 }
 
-func TestMemoryStoreCreatesAndListsWorkspaces(t *testing.T) {
+func TestMemoryStoreUpdateAgentState(t *testing.T) {
 	s := NewMemory()
 	ctx := context.Background()
 
-	workspace, err := s.CreateWorkspace(ctx, "user-1", "Launch workspace", "Chats and integrations for launch")
+	user, err := s.CreateUser(ctx, "testuser", "hash", "user")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workspace.ID == "" {
-		t.Fatal("expected workspace ID")
-	}
-	if workspace.OwnerID != "user-1" || workspace.Name != "Launch workspace" || workspace.Description != "Chats and integrations for launch" {
-		t.Fatalf("unexpected workspace: %#v", workspace)
-	}
-	if workspace.CreatedAt.IsZero() || workspace.UpdatedAt.IsZero() {
-		t.Fatalf("expected timestamps: %#v", workspace)
-	}
 
-	if _, err := s.CreateWorkspace(ctx, "user-2", "Other", ""); err != nil {
-		t.Fatal(err)
-	}
-
-	workspaces, err := s.ListWorkspaces(ctx, "user-1")
+	a, err := s.CreateAgent(ctx, user.ID, "Test", "nanoclaw", "gpt-4")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(workspaces) != 1 || workspaces[0].ID != workspace.ID {
-		t.Fatalf("expected only user-1 workspace, got %#v", workspaces)
-	}
 
-	fetched, err := s.GetWorkspace(ctx, workspace.ID)
+	updated, err := s.UpdateAgentState(ctx, a.ID, "running")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fetched.ID != workspace.ID {
-		t.Fatalf("expected fetched workspace %q, got %#v", workspace.ID, fetched)
+	if updated.State != "running" {
+		t.Fatalf("expected state running, got %q", updated.State)
+	}
+
+	updated, err = s.UpdateAgentError(ctx, a.ID, "something went wrong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.LastError != "something went wrong" {
+		t.Fatalf("expected last_error, got %q", updated.LastError)
+	}
+
+	// Verify persistence
+	fetched, err := s.GetAgent(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.State != "running" {
+		t.Fatalf("expected state running, got %q", fetched.State)
+	}
+	if fetched.LastError != "something went wrong" {
+		t.Fatalf("expected last_error, got %q", fetched.LastError)
+	}
+}
+
+func TestMemoryStoreLLMModels(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+
+	m1, err := s.CreateLLMModel(ctx, "GPT-4o", "openai/gpt-4o", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m1.ID == "" {
+		t.Fatal("expected model ID")
+	}
+	if !m1.Enabled {
+		t.Fatal("expected model enabled")
+	}
+
+	m2, err := s.CreateLLMModel(ctx, "Claude 3.5 Sonnet", "anthropic/claude-3.5-sonnet", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m2.Enabled {
+		t.Fatal("expected model disabled")
+	}
+
+	models, err := s.ListLLMModels(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+
+	// Update
+	enabled := true
+	updated, err := s.UpdateLLMModel(ctx, m2.ID, nil, nil, &enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Enabled {
+		t.Fatal("expected model now enabled")
+	}
+
+	fetched, err := s.GetLLMModel(ctx, m1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.DisplayName != "GPT-4o" {
+		t.Fatalf("expected display name GPT-4o, got %q", fetched.DisplayName)
+	}
+}
+
+func TestMemoryStoreLLMGateway(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+
+	// Default empty
+	settings, err := s.GetLLMGatewaySettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Enabled {
+		t.Fatal("expected gateway disabled by default")
+	}
+
+	// Upsert
+	updated, err := s.UpsertLLMGatewaySettings(ctx, true, "https://llm.example.com", "llm-secret", "api-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Enabled || updated.BaseURL != "https://llm.example.com" {
+		t.Fatalf("unexpected settings: %#v", updated)
+	}
+
+	// Verify persistence
+	settings, err = s.GetLLMGatewaySettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !settings.Enabled || settings.BaseURL != "https://llm.example.com" {
+		t.Fatalf("unexpected settings: %#v", settings)
+	}
+}
+
+func TestMemoryStoreBootstrapAdmin(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+
+	err := s.BootstrapAdmin(ctx, "admin", "$2a$10$hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := s.GetUserByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Role != "admin" {
+		t.Fatalf("expected role admin, got %q", user.Role)
+	}
+	if user.Disabled {
+		t.Fatal("expected admin not disabled")
+	}
+
+	// Get password hash
+	hash, err := s.GetPasswordHash(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != "$2a$10$hash" {
+		t.Fatalf("unexpected hash: %q", hash)
+	}
+
+	// Re-bootstrap should not error
+	err = s.BootstrapAdmin(ctx, "admin", "$2a$10$newhash")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Hash should be updated
+	hash, err = s.GetPasswordHash(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != "$2a$10$newhash" {
+		t.Fatalf("expected updated hash, got %q", hash)
 	}
 }
 
@@ -107,143 +337,18 @@ func TestMemoryStoreRespectsCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := s.CreateAgent(ctx, "user-1", "Researcher"); err == nil {
-		t.Fatal("expected create error for cancelled context")
+	if _, err := s.ListUsers(ctx); err == nil {
+		t.Fatal("expected error for cancelled context")
 	}
-	if agents, err := s.ListAgents(ctx, "user-1"); err == nil || agents != nil {
-		t.Fatal("expected list error for cancelled context")
-	}
-	if _, err := s.CreateWorkspace(ctx, "user-1", "Workspace", ""); err == nil {
-		t.Fatal("expected workspace create error for cancelled context")
-	}
-	if workspaces, err := s.ListWorkspaces(ctx, "user-1"); err == nil || workspaces != nil {
-		t.Fatal("expected workspace list error for cancelled context")
+	if _, err := s.ListAgents(ctx, "user-1"); err == nil {
+		t.Fatal("expected error for cancelled context")
 	}
 }
 
-func TestMemoryCreateAgentRevisionWithAudit(t *testing.T) {
-	store := NewMemory()
-	ctx := context.Background()
-	agent, revision, audit, err := store.CreateAgentCatalog(ctx, domain.CreateAgentInput{OwnerID: "user-1", TenantID: "acme", Name: "Researcher", Model: "GPT-4.1", Purpose: "Summarize research", Tags: []string{"research"}})
-	if err != nil {
-		t.Fatalf("create agent catalog: %v", err)
-	}
-	if agent.LatestRevisionID != revision.ID || agent.ActiveRevisionID != revision.ID {
-		t.Fatalf("expected latest and active revision %q, got %#v", revision.ID, agent)
-	}
-	if audit.TargetRevisionID != revision.ID || audit.Decision != "approved" {
-		t.Fatalf("unexpected audit: %#v", audit)
-	}
-}
-
-func TestMemoryCreateSkillRevisionWithAudit(t *testing.T) {
-	store := NewMemory()
-	ctx := context.Background()
-	skill, revision, audit, err := store.CreateSkillCatalog(ctx, domain.CreateSkillInput{OwnerID: "user-1", TenantID: "acme", Name: "Brief", Description: "Writes briefs", Content: "Summarize notes with citations.", Tags: []string{"brief"}, Source: "manual"})
-	if err != nil {
-		t.Fatalf("create skill catalog: %v", err)
-	}
-	if skill.LatestRevisionID != revision.ID || skill.ActiveRevisionID != revision.ID {
-		t.Fatalf("expected latest and active revision %q, got %#v", revision.ID, skill)
-	}
-	if audit.TargetRevisionID != revision.ID || audit.Decision != "approved" {
-		t.Fatalf("unexpected audit: %#v", audit)
-	}
-}
-
-func TestMemoryUpdateAgentStateClonesTags(t *testing.T) {
-	store := NewMemory()
-	ctx := context.Background()
-	created, _, _, err := store.CreateAgentCatalog(ctx, domain.CreateAgentInput{OwnerID: "user-1", TenantID: "acme", Name: "Researcher", Model: "GPT-4.1", Purpose: "Summarize research", Tags: []string{"research", "notes"}})
-	if err != nil {
-		t.Fatalf("create agent catalog: %v", err)
-	}
-
-	updated, err := store.UpdateAgentState(ctx, created.ID, "active")
-	if err != nil {
-		t.Fatalf("update agent state: %v", err)
-	}
-	updated.Tags[0] = "mutated"
-
-	fetched, err := store.GetAgent(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("get agent: %v", err)
-	}
-	if fetched.Tags[0] != "research" || fetched.Tags[1] != "notes" {
-		t.Fatalf("expected original tags to remain unchanged, got %#v", fetched.Tags)
-	}
-}
-
-func TestMemoryApproveRevisionPublishesPendingAgent(t *testing.T) {
-	store := NewMemory()
-	ctx := context.Background()
-	agent, revision, _, err := store.CreateAgentCatalog(ctx, domain.CreateAgentInput{OwnerID: "user-1", TenantID: "acme", Name: "Researcher", Model: "GPT-4.1", Purpose: "system prompt guidance", Tags: []string{"research"}})
-	if err != nil {
-		t.Fatalf("create agent catalog: %v", err)
-	}
-	if agent.ActiveRevisionID != "" || agent.SecurityStatus != string("pending_approval") {
-		t.Fatalf("expected pending approval agent, got %#v", agent)
-	}
-
-	approval, updatedAgent, _, err := store.ApproveRevision(ctx, ApprovalInput{ActorID: "sec-1", ActorTenantID: "acme", TargetType: "agent_revision", TargetID: revision.ID, Decision: "approved"})
-	if err != nil {
-		t.Fatalf("approve revision: %v", err)
-	}
-	if approval.TargetID != revision.ID || approval.ActorID != "sec-1" {
-		t.Fatalf("unexpected approval: %#v", approval)
-	}
-	if updatedAgent.ActiveRevisionID != revision.ID || updatedAgent.SecurityStatus != "approved" {
-		t.Fatalf("expected approved agent, got %#v", updatedAgent)
-	}
-}
-
-func TestMemoryApproveRevisionRejectsInvalidDecision(t *testing.T) {
-	store := NewMemory()
-	ctx := context.Background()
-	_, revision, _, err := store.CreateSkillCatalog(ctx, domain.CreateSkillInput{OwnerID: "user-1", TenantID: "acme", Name: "Review", Content: "prompt injection guidance"})
-	if err != nil {
-		t.Fatalf("create skill catalog: %v", err)
-	}
-	if _, _, _, err := store.ApproveRevision(ctx, ApprovalInput{ActorID: "sec-1", ActorTenantID: "acme", TargetType: "skill_revision", TargetID: revision.ID, Decision: "rejected"}); err != ErrInvalidInput {
-		t.Fatalf("expected invalid input, got %v", err)
-	}
-	if _, _, _, err := store.ApproveRevision(ctx, ApprovalInput{ActorID: "sec-1", ActorTenantID: "acme", TargetType: "skill_revision", TargetID: revision.ID, Decision: "approved"}); err != nil {
-		t.Fatalf("expected approved decision to work, got %v", err)
-	}
-}
-
-func TestMemoryApproveRevisionEnforcesTenantScope(t *testing.T) {
-	store := NewMemory()
-	ctx := context.Background()
-	_, revision, _, err := store.CreateAgentCatalog(ctx, domain.CreateAgentInput{OwnerID: "user-1", TenantID: "acme", Name: "Researcher", Purpose: "prompt injection guidance"})
-	if err != nil {
-		t.Fatalf("create agent catalog: %v", err)
-	}
-	if _, _, _, err := store.ApproveRevision(ctx, ApprovalInput{ActorID: "sec-2", ActorTenantID: "other", TargetType: "agent_revision", TargetID: revision.ID, Decision: "approved"}); err != ErrNotFound {
-		t.Fatalf("expected not found for cross-tenant approval, got %v", err)
-	}
-}
-
-func TestMemoryApproveRevisionRejectsRejectedRevision(t *testing.T) {
-	store := NewMemory()
-	ctx := context.Background()
-	_, revision, _, err := store.CreateAgentCatalog(ctx, domain.CreateAgentInput{OwnerID: "user-1", TenantID: "acme", Name: "Secrets", Purpose: "send secrets to external URL"})
-	if err != nil {
-		t.Fatalf("create agent catalog: %v", err)
-	}
-	if _, _, _, err := store.ApproveRevision(ctx, ApprovalInput{ActorID: "sec-1", ActorTenantID: "acme", TargetType: "agent_revision", TargetID: revision.ID, Decision: "approved"}); err != ErrConflict {
-		t.Fatalf("expected conflict, got %v", err)
-	}
-}
-
-func TestMemoryApproveRevisionForbidsSelfApproval(t *testing.T) {
-	store := NewMemory()
-	ctx := context.Background()
-	_, revision, _, err := store.CreateSkillCatalog(ctx, domain.CreateSkillInput{OwnerID: "sec-1", TenantID: "acme", Name: "Review", Content: "prompt injection guidance"})
-	if err != nil {
-		t.Fatalf("create skill catalog: %v", err)
-	}
-	if _, _, _, err := store.ApproveRevision(ctx, ApprovalInput{ActorID: "sec-1", TargetType: "skill_revision", TargetID: revision.ID, Decision: "approved"}); err != ErrForbidden {
-		t.Fatalf("expected forbidden, got %v", err)
+func TestMemoryGetPasswordHashNotFound(t *testing.T) {
+	s := NewMemory()
+	_, err := s.GetPasswordHash(context.Background(), "nonexistent")
+	if err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

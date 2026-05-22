@@ -9,10 +9,14 @@ import (
 )
 
 type StartRequest struct {
-	AgentID      string
-	OwnerID      string
-	Runtime      string
-	RuntimeToken string
+	AgentID              string
+	OwnerID              string
+	Runtime              string
+	RuntimeToken         string
+	LLMModel             string
+	LLMGatewayBaseURL    string
+	LLMGatewaySecretName string
+	LLMGatewaySecretKey  string
 }
 
 type RuntimeLease struct {

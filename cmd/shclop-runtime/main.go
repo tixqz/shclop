@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -13,6 +13,7 @@ import (
 )
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	gatewayURL := flag.String("gateway", env("SHCLOP_GATEWAY_URL", "ws://localhost:8080/runtime/ws"), "runtime websocket URL")
 	agentID := flag.String("agent-id", os.Getenv("SHCLOP_AGENT_ID"), "agent id to register")
 	token := flag.String("token", runtimeTokenFromEnv(), "runtime token returned by agent start")
@@ -20,42 +21,52 @@ func main() {
 	flag.Parse()
 
 	if strings.TrimSpace(*agentID) == "" || strings.TrimSpace(*token) == "" {
-		log.Fatal("agent-id and token are required")
+		logger.Error("agent-id and token are required")
+		os.Exit(1)
 	}
+	llmGatewayConfigured := strings.TrimSpace(os.Getenv("LLM_GATEWAY_BASE_URL")) != ""
+	llmModel := strings.TrimSpace(os.Getenv("LLM_GATEWAY_MODEL"))
 
 	header := map[string][]string{"Authorization": {"Bearer " + *token}}
 	conn, _, err := websocket.DefaultDialer.Dial(*gatewayURL, header)
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("failed to connect runtime websocket", "error", err)
+		os.Exit(1)
 	}
 	defer conn.Close()
 
 	if err := conn.WriteJSON(gateway.Envelope{Type: "runtime.hello", AgentID: *agentID, Payload: map[string]any{"runtime": *runtimeName}}); err != nil {
-		log.Fatal(err)
+		logger.Error("failed to send runtime hello", "error", err)
+		os.Exit(1)
 	}
 	var accepted gateway.Envelope
 	if err := conn.ReadJSON(&accepted); err != nil {
-		log.Fatal(err)
+		logger.Error("failed to read runtime acceptance", "error", err)
+		os.Exit(1)
 	}
 	if accepted.Type != "runtime.accepted" {
-		log.Fatalf("runtime rejected: %#v", accepted)
+		logger.Error("runtime rejected", "type", accepted.Type, "payload", accepted.Payload)
+		os.Exit(1)
 	}
-	log.Printf("runtime registered: agent=%s flavor=%s", *agentID, *runtimeName)
+	logger.Info("runtime registered", "agent_id", *agentID, "runtime", *runtimeName, "llm_gateway_configured", llmGatewayConfigured, "model", llmModel)
 
 	for {
 		var task gateway.Envelope
 		if err := conn.ReadJSON(&task); err != nil {
-			log.Fatal(err)
+			logger.Error("failed to read task", "error", err, "agent_id", *agentID)
+			os.Exit(1)
 		}
 		if task.Type != "task.run" {
 			continue
 		}
+		logger.Info("task received", "agent_id", *agentID, "runtime", *runtimeName, "message_id", task.MessageID)
 		taskCtx, cancel := context.WithCancel(context.Background())
 		events, err := adapterForRuntime(*runtimeName).Run(taskCtx, claw.Task{Text: taskText(task.Payload)})
 		if err != nil {
 			cancel()
 			if writeErr := conn.WriteJSON(clawEventToEnvelope(claw.Event{Type: claw.EventError, Err: err}, task, 1)); writeErr != nil {
-				log.Fatal(writeErr)
+				logger.Error("failed to send task error", "error", writeErr, "agent_id", *agentID)
+				os.Exit(1)
 			}
 			continue
 		}
@@ -66,7 +77,8 @@ func main() {
 			seq++
 			if err := conn.WriteJSON(envelope); err != nil {
 				cancel()
-				log.Fatal(err)
+				logger.Error("failed to send task event", "error", err, "agent_id", *agentID, "event", envelope.Type)
+				os.Exit(1)
 			}
 			if isTerminalEnvelope(envelope.Type) {
 				terminal = true
@@ -78,7 +90,8 @@ func main() {
 			envelope := clawEventToEnvelope(claw.Event{Type: claw.EventError, Text: "claw adapter ended without terminal event"}, task, seq)
 			cancel()
 			if err := conn.WriteJSON(envelope); err != nil {
-				log.Fatal(err)
+				logger.Error("failed to send terminal task event", "error", err, "agent_id", *agentID)
+				os.Exit(1)
 			}
 		}
 	}

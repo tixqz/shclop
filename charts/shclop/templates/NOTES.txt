@@ -1,0 +1,44 @@
+{{- $fullname := include "shclop.fullname" . -}}
+Thank you for installing {{ .Chart.Name }} {{ .Chart.Version }}.
+
+Configuration
+-------------
+  Backend service:  {{ $fullname }}-backend:{{ .Values.service.port }}
+  PostgreSQL:       {{ if .Values.postgresql.bundled -}}
+                    bundled ({{ $fullname }}-postgres:5432)
+                    {{- else if .Values.postgresql.existingSecret.name -}}
+                    external (secret: {{ .Values.postgresql.existingSecret.name }})
+                    {{- else -}}
+                    external (not configured — set postgresql.bundled=true or postgresql.existingSecret.name)
+                    {{- end }}
+  Bootstrap admin:  {{ .Values.bootstrapAdmin.username }}
+  Runtime class:    {{ .Values.agentRuntime.runtimeClassName }}
+
+{{- if or .Values.observability.victoriaMetrics.enabled .Values.observability.victoriaLogs.enabled .Values.observability.grafana.enabled }}
+
+Observability
+-------------
+{{ if .Values.observability.victoriaMetrics.enabled }}
+  VictoriaMetrics k8s-stack ({{ .Values.observability.retentionDays }}d retention):
+    helm repo add vm https://victoriametrics.github.io/helm-charts/
+    helm install {{ .Values.observability.victoriaMetrics.releaseName }} vm/victoria-metrics-k8s-stack \
+      --set vmcluster.retentionPeriod={{ .Values.observability.retentionDays }}d
+{{ end }}
+{{ if .Values.observability.victoriaLogs.enabled }}
+  VictoriaLogs ({{ .Values.observability.retentionDays }}d retention):
+    helm repo add vm https://victoriametrics.github.io/helm-charts/
+    helm install {{ .Values.observability.victoriaLogs.releaseName }} vm/victoria-logs-single \
+      --set retentionPeriod={{ .Values.observability.retentionDays }}d
+{{ end }}
+{{ if .Values.observability.grafana.enabled }}
+  Grafana:
+    helm repo add grafana https://grafana.github.io/helm-charts/
+    helm install {{ .Values.observability.grafana.releaseName }} grafana/grafana
+{{ end }}
+{{- end }}
+
+{{- if not .Values.bootstrapAdmin.existingSecret.name }}
+The bootstrap admin password has been stored in the Secret "{{ $fullname }}-bootstrap-admin".
+Retrieve it with:
+  kubectl get secret {{ $fullname }}-bootstrap-admin -o jsonpath='{.data.password}' | base64 -d
+{{- end }}

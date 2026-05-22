@@ -14,6 +14,16 @@ type AgentPodRequest struct {
 	WorkspacePVC     string
 	CPU              string
 	Memory           string
+	// LLM configuration
+	LLMGatewayBaseURL   string
+	LLMModel            string
+	LLMGatewaySecretRef *SecretKeyRef
+}
+
+type SecretKeyRef struct {
+	Name   string
+	Key    string
+	EnvVar string // Target env var name
 }
 
 type AgentPodSpec struct {
@@ -42,7 +52,14 @@ type ContainerSpec struct {
 	CPU                      string
 	Memory                   string
 	Env                      map[string]string
+	EnvFrom                  []EnvFromSource // SecretKeyRef entries
 	VolumeMounts             []VolumeMount
+}
+
+type EnvFromSource struct {
+	SecretName string
+	SecretKey  string
+	EnvVar     string // Target environment variable name
 }
 
 type VolumeSpec struct {
@@ -60,6 +77,30 @@ type VolumeMount struct {
 }
 
 func BuildAgentPodSpec(req AgentPodRequest) AgentPodSpec {
+	env := map[string]string{
+		"SHCLOP_GATEWAY_URL":        req.GatewayURL,
+		"SHCLOP_AGENT_ID":           req.AgentID,
+		"SHCLOP_AGENT_FLAVOR":       req.Runtime,
+		"SHCLOP_RUNTIME_TOKEN_FILE": req.SecretRef.MountPath,
+	}
+
+	// Add LLM environment variables
+	if req.LLMGatewayBaseURL != "" {
+		env["LLM_GATEWAY_BASE_URL"] = req.LLMGatewayBaseURL
+	}
+	if req.LLMModel != "" {
+		env["LLM_GATEWAY_MODEL"] = req.LLMModel
+	}
+
+	var envFrom []EnvFromSource
+	if req.LLMGatewaySecretRef != nil {
+		envFrom = append(envFrom, EnvFromSource{
+			SecretName: req.LLMGatewaySecretRef.Name,
+			SecretKey:  req.LLMGatewaySecretRef.Key,
+			EnvVar:     req.LLMGatewaySecretRef.EnvVar,
+		})
+	}
+
 	spec := AgentPodSpec{
 		Name:             "agent-" + req.AgentID,
 		RuntimeClassName: req.RuntimeClassName,
@@ -87,12 +128,8 @@ func BuildAgentPodSpec(req AgentPodRequest) AgentPodSpec {
 			DropCapabilities:         []string{"ALL"},
 			CPU:                      req.CPU,
 			Memory:                   req.Memory,
-			Env: map[string]string{
-				"SHCLOP_GATEWAY_URL":        req.GatewayURL,
-				"SHCLOP_AGENT_ID":           req.AgentID,
-				"SHCLOP_AGENT_FLAVOR":       req.Runtime,
-				"SHCLOP_RUNTIME_TOKEN_FILE": req.SecretRef.MountPath,
-			},
+			Env:                      env,
+			EnvFrom:                  envFrom,
 			VolumeMounts: []VolumeMount{
 				{Name: "workspace", MountPath: "/workspace"},
 				{Name: "memory", MountPath: "/memory"},

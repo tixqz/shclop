@@ -1,0 +1,35 @@
+{{- $fullname := include "shclop.fullname" . -}}
+{{- $sandboxNs := .Values.sandbox.kubernetes.namespace -}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}-sandbox-manager
+  namespace: {{ $sandboxNs }}
+  labels:
+    {{- include "shclop.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox-manager
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "secrets", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-sandbox-manager
+  namespace: {{ $sandboxNs }}
+  labels:
+    {{- include "shclop.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ $fullname }}-backend
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-sandbox-manager

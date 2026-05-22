@@ -17,15 +17,18 @@ import (
 )
 
 type KubernetesRuntimeProviderConfig struct {
-	Namespace         string
-	GatewayURL        string
-	RuntimeClassName  string
-	Images            map[string]string
-	WorkspaceSize     string
-	StorageClassName  string
-	WorkspacePolicy   string
-	SecretStore       string
-	NetworkPolicySpec NetworkPolicySpec
+	Namespace            string
+	GatewayURL           string
+	RuntimeClassName     string
+	Images               map[string]string
+	WorkspaceSize        string
+	StorageClassName     string
+	WorkspacePolicy      string
+	SecretStore          string
+	NetworkPolicySpec    NetworkPolicySpec
+	LLMGatewayBaseURL    string
+	LLMGatewaySecretName string
+	LLMGatewaySecretKey  string
 }
 
 type KubernetesRuntimeProvider struct {
@@ -49,6 +52,9 @@ func NewKubernetesRuntimeProvider(cfg KubernetesRuntimeProviderConfig) (*Kuberne
 	}
 	if cfg.SecretStore != "kubernetes" {
 		return nil, fmt.Errorf("unsupported secret store %q", cfg.SecretStore)
+	}
+	if strings.TrimSpace(cfg.RuntimeClassName) == "" {
+		return nil, errors.New("runtime class name is required for kubernetes provider")
 	}
 
 	images := make(map[string]string, len(cfg.Images))
@@ -102,16 +108,35 @@ func (p *KubernetesRuntimeProvider) Start(ctx context.Context, request StartRequ
 	if err != nil {
 		return RuntimeLease{}, err
 	}
+	llmSecretRef := (*SecretKeyRef)(nil)
+	if request.LLMGatewaySecretName != "" && request.LLMGatewaySecretKey != "" {
+		llmSecretRef = &SecretKeyRef{
+			Name:   request.LLMGatewaySecretName,
+			Key:    request.LLMGatewaySecretKey,
+			EnvVar: "LLM_GATEWAY_API_KEY",
+		}
+		if err := p.validateSecretKey(ctx, llmSecretRef.Name, llmSecretRef.Key); err != nil {
+			return RuntimeLease{}, err
+		}
+	}
+	llmBaseURL := request.LLMGatewayBaseURL
+	if llmBaseURL == "" {
+		llmBaseURL = p.cfg.LLMGatewayBaseURL
+	}
+
 	podSpec := BuildAgentPodSpec(AgentPodRequest{
-		AgentID:          request.AgentID,
-		OwnerID:          request.OwnerID,
-		Image:            image,
-		RuntimeClassName: p.cfg.RuntimeClassName,
-		GatewayURL:       p.cfg.GatewayURL,
-		Runtime:          runtime,
-		SandboxID:        sandboxID,
-		SecretRef:        secretRef,
-		WorkspacePVC:     pvc.Name,
+		AgentID:             request.AgentID,
+		OwnerID:             request.OwnerID,
+		Image:               image,
+		RuntimeClassName:    p.cfg.RuntimeClassName,
+		GatewayURL:          p.cfg.GatewayURL,
+		Runtime:             runtime,
+		SandboxID:           sandboxID,
+		SecretRef:           secretRef,
+		WorkspacePVC:        pvc.Name,
+		LLMGatewayBaseURL:   llmBaseURL,
+		LLMModel:            request.LLMModel,
+		LLMGatewaySecretRef: llmSecretRef,
 	})
 	pod := BuildRuntimePod(podSpec)
 	pod.Namespace = p.cfg.Namespace
@@ -137,6 +162,20 @@ func (p *KubernetesRuntimeProvider) Start(ctx context.Context, request StartRequ
 	}
 
 	return RuntimeLease{AgentID: request.AgentID, Provider: "kubernetes", Runtime: runtime, ExternalID: pod.Name}, nil
+}
+
+func (p *KubernetesRuntimeProvider) validateSecretKey(ctx context.Context, name, key string) error {
+	secret, err := p.client.CoreV1().Secrets(p.cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("validate llm gateway secret %q: %w", name, err)
+	}
+	if _, ok := secret.Data[key]; ok {
+		return nil
+	}
+	if _, ok := secret.StringData[key]; ok {
+		return nil
+	}
+	return fmt.Errorf("validate llm gateway secret %q: key %q not found", name, key)
 }
 
 func (p *KubernetesRuntimeProvider) Stop(ctx context.Context, agentID string) error {

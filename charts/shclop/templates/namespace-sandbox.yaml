@@ -1,0 +1,13 @@
+{{- $sandboxNs := .Values.sandbox.kubernetes.namespace -}}
+{{- if ne $sandboxNs .Release.Namespace -}}
+# Sandbox namespace for runtime agent pods.
+# If this namespace already exists (e.g. pre-created by the cluster admin),
+# Helm will adopt it during install. Remove this template if managing
+# the namespace externally is preferred.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $sandboxNs }}
+  labels:
+    {{- include "shclop.labels" . | nindent 4 }}
+{{- end }}
