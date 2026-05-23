@@ -37,3 +37,11 @@ Example:
 ```
 Load the codemap skill, generate the backend code map, and save it to CODEMAP.md.
 ```
+
+## 5. Git diff usage
+
+Do not run `git diff` in this repository unless the user explicitly requests it.
+
+## 6. Language for code changes
+
+All newly written code comments, generated configuration comments, scripts, documentation, and user-facing technical text in repository files must be written in English.

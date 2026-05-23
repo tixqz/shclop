@@ -69,6 +69,25 @@ Not in the current UI/API path:
 - PostgreSQL. The chart can deploy a bundled single-node PostgreSQL instance by default, or read an external DSN from an existing Secret.
 - An operator-managed LLM gateway and a Kubernetes Secret containing its API key.
 
+### Provider-agnostic single-node sizing
+
+These requirements are for a single-node test or small production installation. They apply to any VM, bare-metal host, or cloud instance provider.
+
+| Size | CPU | Memory | Disk | Expected use |
+| --- | --- | --- | --- | --- |
+| Minimum | 2 vCPU | 4 GiB RAM | 30 GiB free disk | Bootstrap validation, UI, PostgreSQL, and one light runtime pod. |
+| Recommended | 4 vCPU | 8 GiB RAM | 50 GiB free SSD/NVMe disk | A usable single-node test installation with one or two active runtime pods. |
+| Larger workloads | Add capacity per concurrent runtime pod | Add 1-2 GiB RAM per active runtime pod | Add workspace PVC capacity per agent | More concurrent agents, larger workspaces, or heavier model/tool workloads. |
+
+Additional requirements:
+
+- Hardware virtualization should be available as `/dev/kvm` for Kata Containers. Without KVM, Kata may run slowly or may not be suitable for production isolation.
+- The K3s baseline resource requirements do not include application workloads. Plan extra CPU, memory, and disk for shclop, PostgreSQL, runtime pods, observability, and workspaces.
+- Keep PostgreSQL data and workspace PVCs on persistent storage. For single-node tests, the bundled PostgreSQL is acceptable; for durable production use, prefer managed or separately backed up PostgreSQL.
+- If Ingress TLS is enabled, ports `80/tcp` and `443/tcp` must be reachable by the ACME HTTP-01 issuer.
+
+The bootstrap script checks CPU, memory, disk, and KVM availability during `check` and `install`. Override the default thresholds with `MIN_CPU_CORES`, `MIN_MEMORY_MIB`, and `MIN_DISK_GIB` when testing on intentionally smaller hosts.
+
 ### Minimal values
 
 Create the runtime namespace if it does not exist:

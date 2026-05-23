@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify Go modules are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Test, vet, and build
+        run: |
+          go test ./...
+          go vet ./...
+          go build ./...
+
+  web:
+    name: Web build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build web UI
+        working-directory: web
+        run: npm run build
+
+  helm:
+    name: Helm template
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Render supported chart variants
+        run: |
+          helm template shclop charts/shclop >/dev/null
+          helm template other charts/shclop >/dev/null
+          helm template shclop charts/shclop \
+            --set monitoring.serviceMonitor.enabled=true \
+            --set llmGateway.baseURL=https://llm.example.com \
+            --set llmGateway.existingSecret.name=llm-secret \
+            --set observability.grafana.url=https://grafana.example.com >/dev/null
+          helm template shclop charts/shclop \
+            --set postgresql.existingSecret.name=pg-dsn \
+            --set postgresql.bundled=false >/dev/null
+
+      - name: Verify chart fail-fast validations
+        run: |
+          if helm template shclop charts/shclop --set agentRuntime.runtimeClassName= >/tmp/runtimeclass.out 2>&1; then
+            echo "expected empty RuntimeClass render to fail"
+            exit 1
+          fi
+          grep -q "agentRuntime.runtimeClassName must be a non-empty string" /tmp/runtimeclass.out
+
+          if helm template shclop charts/shclop --set sandbox.provider=mock >/tmp/provider.out 2>&1; then
+            echo "expected non-kubernetes sandbox provider render to fail"
+            exit 1
+          fi
+          grep -q "sandbox.provider must be 'kubernetes'" /tmp/provider.out
+
+          if helm template shclop charts/shclop \
+            --set postgresql.bundled=false \
+            --set postgresql.existingSecret.name= >/tmp/postgres.out 2>&1; then
+            echo "expected missing PostgreSQL source render to fail"
+            exit 1
+          fi
+          grep -q "postgresql.bundled must be true or postgresql.existingSecret.name must be set" /tmp/postgres.out
+
+  container-build:
+    name: Container build (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: shclop
+            dockerfile: Dockerfile
+          - image: shclop-runtime-openclaw
+            dockerfile: runtime/openclaw/Dockerfile
+          - image: shclop-runtime-nanoclaw
+            dockerfile: runtime/nanoclaw/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image without pushing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: ${{ matrix.image }}:ci

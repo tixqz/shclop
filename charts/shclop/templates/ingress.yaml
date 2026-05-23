@@ -1,0 +1,44 @@
+{{- if .Values.ingress.enabled -}}
+{{- if not .Values.ingress.host -}}
+{{- fail "ingress.host must be set when ingress.enabled is true" -}}
+{{- end -}}
+{{- $fullname := include "shclop.fullname" . -}}
+{{- $tlsSecretName := .Values.ingress.tls.secretName | default (printf "%s-tls" $fullname) -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}-backend
+  labels:
+    {{- include "shclop.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+  {{- if or .Values.ingress.annotations .Values.ingress.tls.clusterIssuer }}
+  annotations:
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+    {{- end }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ $tlsSecretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path | quote }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ $fullname }}-backend
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

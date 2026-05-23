@@ -1,7 +1,9 @@
 .worktrees/
 .firecrawl/
+.bootstrap/
 bin/
 web/node_modules/
 web/dist/
 docs/superpowers
 temp/
+config/

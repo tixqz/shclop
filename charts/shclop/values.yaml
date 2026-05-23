@@ -17,6 +17,27 @@ service:
   # -- Add prometheus scrape annotations when serviceMonitor is disabled
   prometheusScrape: true
 
+ingress:
+  # -- Create an Ingress for the backend Service
+  enabled: false
+  # -- IngressClass name (for example: traefik, nginx)
+  className: ""
+  # -- Public hostname for the backend (for example: shclop.<node-ip>.nip.io)
+  host: ""
+  # -- Request path routed to the backend Service
+  path: /
+  # -- Kubernetes Ingress pathType
+  pathType: Prefix
+  # -- Additional annotations for the Ingress
+  annotations: {}
+  tls:
+    # -- Enable TLS on the Ingress
+    enabled: false
+    # -- TLS Secret name (empty = <release-fullname>-tls)
+    secretName: ""
+    # -- cert-manager ClusterIssuer name; when set, adds cert-manager.io/cluster-issuer
+    clusterIssuer: ""
+
 monitoring:
   serviceMonitor:
     # -- Create a ServiceMonitor CR for the backend
