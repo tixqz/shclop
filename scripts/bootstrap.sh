@@ -402,12 +402,25 @@ configure_containerd_kata() {
 
   mkdir -p "$K3S_CONTAINERD_DIR"
 
+  local tmpl="$K3S_CONTAINERD_DIR/config.toml.tmpl"
+
+  if [[ -f "$tmpl" ]] && grep -q '{{[[:space:]]*template "containerd"' "$tmpl" 2>/dev/null; then
+    info "Updating legacy K3s containerd template include..."
+    python3 - "$tmpl" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+content = path.read_text()
+content = content.replace('{{ template "containerd" . }}', '{{ template "base" . }}')
+path.write_text(content)
+PY
+  fi
+
   if [[ -f "$K3S_CONTAINERD_DIR/config.toml.tmpl" ]] && grep -q "kata" "$K3S_CONTAINERD_DIR/config.toml.tmpl" 2>/dev/null; then
     step "Kata already in containerd template"
     return 0
   fi
-
-  local tmpl="$K3S_CONTAINERD_DIR/config.toml.tmpl"
 
   if [[ -f "$tmpl" ]]; then
     cat >> "$tmpl" << 'KATAEOF'
