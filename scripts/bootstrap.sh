@@ -75,7 +75,7 @@ Flags:
   --enable-observability  Install recommended observability stack (VictoriaMetrics k8s-stack, VictoriaLogs, Grafana)
   --observability-namespace NS  Namespace for observability components (default: monitoring)
   --grafana-host HOST     Explicit Grafana hostname (default: grafana.<public-ip>.nip.io)
-  --build-local-images    Build and import local container images (Docker BuildKit) instead of pulling from a registry
+
   --enable-litellm        Install internal LiteLLM gateway (ClusterIP only) for LLM traffic
   --litellm-namespace NS  Namespace for LiteLLM (default: shclop namespace)
   --litellm-release NAME  Helm release name for LiteLLM (default: litellm)
@@ -102,7 +102,6 @@ tls_email=""
 enable_observability=false
 observability_namespace="$OBSERVABILITY_NAMESPACE"
 grafana_host=""
-build_local_images=false
 enable_litellm=false
 
 while [[ $# -gt 0 ]]; do
@@ -126,7 +125,7 @@ while [[ $# -gt 0 ]]; do
     --enable-observability) enable_observability=true; shift ;;
     --observability-namespace) [[ $# -lt 2 ]] && { usage; exit 2; }; observability_namespace="$2"; shift 2 ;;
     --grafana-host) [[ $# -lt 2 ]] && { usage; exit 2; }; grafana_host="$2"; shift 2 ;;
-    --build-local-images) build_local_images=true; shift ;;
+
     --enable-litellm) enable_litellm=true; shift ;;
     --litellm-namespace) [[ $# -lt 2 ]] && { usage; exit 2; }; LITELLM_NAMESPACE="$2"; shift 2 ;;
     --litellm-release) [[ $# -lt 2 ]] && { usage; exit 2; }; LITELLM_RELEASE_NAME="$2"; shift 2 ;;
@@ -877,114 +876,6 @@ YAML
   step "LiteLLM gateway installed: $(litellm_service_url)"
 }
 
-# ═══════════════════════════════════════════════════════════════
-#  LOCAL IMAGE BUILD (Docker BuildKit)
-# ═══════════════════════════════════════════════════════════════
-install_docker_buildkit() {
-  header "Installing Docker + BuildKit"
-  if $dry_run; then
-    warn "[dry-run] installing Docker and docker-buildx-plugin"
-    return 0
-  fi
-
-  ensure_docker_apt_repository() {
-    apt-get update -qq
-    apt-get install -y -qq ca-certificates curl
-    install -m 0755 -d /etc/apt/keyrings
-    if [[ ! -f /etc/apt/keyrings/docker.asc ]]; then
-      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-      chmod a+r /etc/apt/keyrings/docker.asc
-    fi
-    local os_codename
-    os_codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-    [[ -z "$os_codename" ]] && os_codename="noble"
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${os_codename} stable" \
-      > /etc/apt/sources.list.d/docker.list
-    apt-get update -qq
-  }
-
-  if command -v docker &>/dev/null; then
-    step "Docker already installed: $(docker --version 2>/dev/null || true)"
-  else
-    info "Docker not found, installing from official repository..."
-    ensure_docker_apt_repository
-    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    step "Docker installed"
-  fi
-
-  if docker buildx version &>/dev/null; then
-    step "Docker BuildX available: $(docker buildx version 2>/dev/null | head -1)"
-  else
-    info "BuildX plugin not found, installing docker-buildx-plugin..."
-    ensure_docker_apt_repository
-    apt-get install -y -qq docker-buildx-plugin 2>/dev/null || fail "failed to install docker-buildx-plugin"
-    docker buildx version &>/dev/null || fail "docker-buildx-plugin installed but docker buildx is unavailable"
-  fi
-
-  if ! systemctl is-active --quiet docker 2>/dev/null; then
-    info "Starting Docker..."
-    systemctl enable docker 2>/dev/null || true
-    systemctl start docker 2>/dev/null || true
-    local i=0
-    while ! docker info &>/dev/null; do
-      sleep 2
-      i=$((i+1))
-      [[ $i -gt 15 ]] && { warn "Docker did not start within 30s"; break; }
-    done
-    docker info &>/dev/null && step "Docker is running"
-  fi
-}
-
-build_local_images() {
-  header "Building and importing local images"
-  if $dry_run; then
-    warn "[dry-run] DOCKER_BUILDKIT=1 docker build -t shclop:${IMAGE_TAG} -f Dockerfile $REPO_DIR"
-    warn "[dry-run] DOCKER_BUILDKIT=1 docker build -t shclop-runtime-openclaw:${IMAGE_TAG} -f runtime/openclaw/Dockerfile $REPO_DIR"
-    warn "[dry-run] DOCKER_BUILDKIT=1 docker build -t shclop-runtime-nanoclaw:${IMAGE_TAG} -f runtime/nanoclaw/Dockerfile $REPO_DIR"
-    warn "[dry-run] docker save ... | gzip > tmp.tar.gz; k3s ctr --namespace k8s.io images import tmp.tar.gz"
-    return 0
-  fi
-
-  if ! docker info &>/dev/null; then
-    fail "Docker is not running. Ensure Docker is installed and started."
-  fi
-
-  # Build images
-  info "Building shclop:${IMAGE_TAG} ..."
-  DOCKER_BUILDKIT=1 docker build -t "shclop:${IMAGE_TAG}" -f "$REPO_DIR/Dockerfile" "$REPO_DIR" || fail "Failed to build shclop image"
-
-  info "Building shclop-runtime-openclaw:${IMAGE_TAG} ..."
-  DOCKER_BUILDKIT=1 docker build -t "shclop-runtime-openclaw:${IMAGE_TAG}" -f "$REPO_DIR/runtime/openclaw/Dockerfile" "$REPO_DIR" || fail "Failed to build shclop-runtime-openclaw image"
-
-  info "Building shclop-runtime-nanoclaw:${IMAGE_TAG} ..."
-  DOCKER_BUILDKIT=1 docker build -t "shclop-runtime-nanoclaw:${IMAGE_TAG}" -f "$REPO_DIR/runtime/nanoclaw/Dockerfile" "$REPO_DIR" || fail "Failed to build shclop-runtime-nanoclaw image"
-
-  step "All images built locally"
-
-  # Import into the k8s.io containerd namespace so K3s CRI can see the images.
-  info "Importing images into k3s containerd..."
-  local import_tmp
-  import_tmp="$(mktemp -d /tmp/shclop-import.XXXXXX)"
-  local image safe_image tarball
-  for image in "shclop:${IMAGE_TAG}" "shclop-runtime-openclaw:${IMAGE_TAG}" "shclop-runtime-nanoclaw:${IMAGE_TAG}"; do
-    safe_image="$(printf '%s' "$image" | tr '/:' '--')"
-    tarball="$import_tmp/${safe_image}.tar.gz"
-    info "Saving ${image}..."
-    docker save "$image" | gzip > "$tarball" || {
-      rm -rf "$import_tmp"
-      fail "Failed to save ${image}"
-    }
-    info "Importing ${image} into k3s containerd (namespace: k8s.io)..."
-    k3s ctr --namespace k8s.io images import "$tarball" || {
-      rm -rf "$import_tmp"
-      fail "Failed to import ${image} into k3s"
-    }
-    rm -f "$tarball"
-  done
-  rmdir "$import_tmp" 2>/dev/null || true
-
-  step "Images imported into k3s containerd"
-}
 
 # ═══════════════════════════════════════════════════════════════
 #  DEPLOY
@@ -1138,7 +1029,7 @@ agentRuntime:
     openclaw: ${IMAGE_REPO}-runtime-openclaw:${IMAGE_TAG}
 VALUESYAML
   else
-    # Local/dev images (tag overridable via IMAGE_TAG)
+    # No image repository provided; use bare image names (tag overridable via IMAGE_TAG)
     cat >> "$out" <<VALUESYAML
 
 image:
@@ -1220,19 +1111,13 @@ action_install() {
   install_cert_manager
   create_clusterissuer
 
-  # 4. Local image build (optional)
-  if $build_local_images; then
-    install_docker_buildkit
-    build_local_images
-  fi
-
-  # 5. Internal LLM gateway (optional)
+  # 4. Internal LLM gateway (optional)
   install_litellm_gateway
 
-  # 6. Deploy shclop
+  # 5. Deploy shclop
   deploy_shclop
 
-  # 7. Observability stack (optional)
+  # 6. Observability stack (optional)
   install_observability_stack
 
   if ! $dry_run; then
@@ -1408,7 +1293,6 @@ if [[ -n "$remote" ]]; then
   $remove_kata  && remote_argv+=("--remove-kata")
   $enable_ingress && remote_argv+=("--enable-ingress")
   $enable_observability && remote_argv+=("--enable-observability")
-  $build_local_images && remote_argv+=("--build-local-images")
   $enable_litellm && remote_argv+=("--enable-litellm")
   [[ -n "$values" ]] && remote_argv+=("--values" "$values")
   [[ -n "$IMAGE_REPO" ]] && remote_argv+=("--image-repo" "$IMAGE_REPO")
