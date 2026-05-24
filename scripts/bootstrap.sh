@@ -785,7 +785,7 @@ build_local_images() {
     warn "[dry-run] DOCKER_BUILDKIT=1 docker build -t shclop:${IMAGE_TAG} -f Dockerfile $REPO_DIR"
     warn "[dry-run] DOCKER_BUILDKIT=1 docker build -t shclop-runtime-openclaw:${IMAGE_TAG} -f runtime/openclaw/Dockerfile $REPO_DIR"
     warn "[dry-run] DOCKER_BUILDKIT=1 docker build -t shclop-runtime-nanoclaw:${IMAGE_TAG} -f runtime/nanoclaw/Dockerfile $REPO_DIR"
-    warn "[dry-run] docker save ... | k3s ctr images import -"
+    warn "[dry-run] docker save ... | gzip > tmp.tar.gz; k3s ctr --namespace k8s.io images import tmp.tar.gz"
     return 0
   fi
 
@@ -805,11 +805,27 @@ build_local_images() {
 
   step "All images built locally"
 
-  # Import into k3s containerd
+  # Import into the k8s.io containerd namespace so K3s CRI can see the images.
   info "Importing images into k3s containerd..."
-  docker save "shclop:${IMAGE_TAG}" | k3s ctr images import - || fail "Failed to import shclop image into k3s"
-  docker save "shclop-runtime-openclaw:${IMAGE_TAG}" | k3s ctr images import - || fail "Failed to import shclop-runtime-openclaw image into k3s"
-  docker save "shclop-runtime-nanoclaw:${IMAGE_TAG}" | k3s ctr images import - || fail "Failed to import shclop-runtime-nanoclaw image into k3s"
+  local import_tmp
+  import_tmp="$(mktemp -d /tmp/shclop-import.XXXXXX)"
+  local image safe_image tarball
+  for image in "shclop:${IMAGE_TAG}" "shclop-runtime-openclaw:${IMAGE_TAG}" "shclop-runtime-nanoclaw:${IMAGE_TAG}"; do
+    safe_image="$(printf '%s' "$image" | tr '/:' '--')"
+    tarball="$import_tmp/${safe_image}.tar.gz"
+    info "Saving ${image}..."
+    docker save "$image" | gzip > "$tarball" || {
+      rm -rf "$import_tmp"
+      fail "Failed to save ${image}"
+    }
+    info "Importing ${image} into k3s containerd (namespace: k8s.io)..."
+    k3s ctr --namespace k8s.io images import "$tarball" || {
+      rm -rf "$import_tmp"
+      fail "Failed to import ${image} into k3s"
+    }
+    rm -f "$tarball"
+  done
+  rmdir "$import_tmp" 2>/dev/null || true
 
   step "Images imported into k3s containerd"
 }
