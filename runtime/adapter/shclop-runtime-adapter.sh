@@ -7,6 +7,10 @@ echo "shclop runtime flavor: ${SHCLOP_AGENT_FLAVOR:-unknown}"
 echo "workspace: /workspace"
 echo "memory: /memory"
 
+if [ "${SHCLOP_RUNTIME_TOKEN:-}" = "" ] && [ "${SHCLOP_RUNTIME_TOKEN_FILE:-}" != "" ] && [ -r "$SHCLOP_RUNTIME_TOKEN_FILE" ]; then
+  SHCLOP_RUNTIME_TOKEN="$(cat "$SHCLOP_RUNTIME_TOKEN_FILE")"
+fi
+
 if [ "${SHCLOP_GATEWAY_URL:-}" != "" ] && [ "${SHCLOP_AGENT_ID:-}" != "" ] && [ "${SHCLOP_RUNTIME_TOKEN:-}" != "" ]; then
   exec shclop-runtime \
     --gateway "$SHCLOP_GATEWAY_URL" \

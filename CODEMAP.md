@@ -28,7 +28,7 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 | `internal/logging/` | `slog` JSON logger construction with configurable log level. |
 | `internal/identity/` | Legacy identity interfaces/mock YAML provider retained for compatibility but not wired into the production API path. |
 | `internal/security/` | Legacy security policy/audit helpers retained but not exposed by production routes. |
-| `runtime/` | Runtime image definitions for NanoClaw/OpenClaw and shell adapter used inside agent runtime containers. |
+| `runtime/` | Runtime image definitions for NanoClaw/OpenClaw and shell adapter used inside agent runtime containers; the adapter reads the mounted runtime token file before launching `shclop-runtime`. |
 | `cmd/mock-runtime/` | Existing local mock-runtime tooling outside the production Helm path. |
 
 ## Core data model
