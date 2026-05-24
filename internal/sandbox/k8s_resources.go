@@ -51,6 +51,11 @@ func BuildRuntimePod(spec AgentPodSpec) *corev1.Pod {
 	if spec.RuntimeClassName != "" {
 		pod.Spec.RuntimeClassName = &spec.RuntimeClassName
 	}
+	// Runtime pods use the node DNS resolver directly (DNSDefault) instead
+	// of the cluster DNS (ClusterFirst) because Kata micro-VMs may not
+	// route cluster DNS traffic correctly, and runtime pods only need
+	// external DNS (LLM gateway addresses, not in-cluster services).
+	pod.Spec.DNSPolicy = corev1.DNSDefault
 	return pod
 }
 
