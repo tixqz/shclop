@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -14,8 +15,31 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
+// seedRunningPodReactor sets up a reactor on create/update for pods that marks
+// the pod as Running with a Ready container status. This allows tests that call
+// Start to complete the readiness wait without timing out.
+func seedRunningPodReactor(client *fake.Clientset) {
+	client.Fake.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		pod := action.(k8stesting.CreateActionImpl).GetObject().(*corev1.Pod)
+		pod.Status.Phase = corev1.PodRunning
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+			{Name: "runtime", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+		}
+		return false, nil, nil
+	})
+	client.Fake.PrependReactor("update", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		pod := action.(k8stesting.UpdateActionImpl).GetObject().(*corev1.Pod)
+		pod.Status.Phase = corev1.PodRunning
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+			{Name: "runtime", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+		}
+		return false, nil, nil
+	})
+}
+
 func TestKubernetesRuntimeProviderStartCreatesSandboxResources(t *testing.T) {
 	client := fake.NewSimpleClientset()
+	seedRunningPodReactor(client)
 	provider := &KubernetesRuntimeProvider{
 		cfg: KubernetesRuntimeProviderConfig{
 			Namespace:        "default",
@@ -90,6 +114,7 @@ func TestKubernetesRuntimeProviderStartCreatesSandboxResources(t *testing.T) {
 
 func TestKubernetesRuntimeProviderStartSanitizesLabelsForUnsafeAgentID(t *testing.T) {
 	client := fake.NewSimpleClientset()
+	seedRunningPodReactor(client)
 	provider := &KubernetesRuntimeProvider{
 		cfg: KubernetesRuntimeProviderConfig{
 			Namespace:         "default",
@@ -125,6 +150,7 @@ func TestKubernetesRuntimeProviderStartDoesNotReplaceExistingPodOrPVCSpec(t *tes
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "agent-agent-1", Namespace: "default", Labels: map[string]string{"existing": "pod"}}, Spec: corev1.PodSpec{NodeName: "keep-me"}},
 		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "shclop-workspace-agent-1", Namespace: "default", Labels: map[string]string{"existing": "pvc"}}, Spec: corev1.PersistentVolumeClaimSpec{VolumeName: "keep-me"}},
 	)
+	seedRunningPodReactor(client)
 	provider := &KubernetesRuntimeProvider{cfg: KubernetesRuntimeProviderConfig{Namespace: "default", GatewayURL: "ws://gateway", RuntimeClassName: "kata", Images: map[string]string{"openclaw": "image-openclaw:latest"}, WorkspaceSize: "20Gi", StorageClassName: "fast", SecretStore: "kubernetes"}, client: client, secretStore: KubernetesSecretStore{Namespace: "default"}}
 	if _, err := provider.Start(context.Background(), StartRequest{AgentID: "agent-1", OwnerID: "user-1", Runtime: "openclaw", RuntimeToken: "tok-123"}); err != nil {
 		t.Fatalf("start: %v", err)
@@ -156,6 +182,7 @@ func TestNewKubernetesRuntimeProviderRejectsEmptyRuntimeClassName(t *testing.T) 
 
 func TestKubernetesRuntimeProviderStartValidatesLLMGatewaySecret(t *testing.T) {
 	client := fake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "llm-secret", Namespace: "default"}, Data: map[string][]byte{"api-key": []byte("secret")}})
+	seedRunningPodReactor(client)
 	provider := &KubernetesRuntimeProvider{
 		cfg:         KubernetesRuntimeProviderConfig{Namespace: "default", GatewayURL: "ws://gateway", RuntimeClassName: "kata", Images: map[string]string{"openclaw": "image-openclaw:latest"}, WorkspaceSize: "20Gi", SecretStore: "kubernetes"},
 		client:      client,
@@ -238,3 +265,167 @@ func TestKubernetesRuntimeProviderStopReturnsDeleteErrors(t *testing.T) {
 		t.Fatal("expected delete error")
 	}
 }
+
+// --- Readiness wait tests ---
+
+func TestKubernetesRuntimeProviderStartWaitsForPodReady(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	// Use a reactor that makes the pod Running+Ready on create.
+	seedRunningPodReactor(client)
+	provider := &KubernetesRuntimeProvider{
+		cfg: KubernetesRuntimeProviderConfig{
+			Namespace:        "default",
+			GatewayURL:       "ws://gateway",
+			RuntimeClassName: "kata",
+			Images:           map[string]string{"openclaw": "image-openclaw:latest"},
+			WorkspaceSize:    "20Gi",
+			StorageClassName: "fast",
+			WorkspacePolicy:  "delete",
+			SecretStore:      "kubernetes",
+			PodReadyTimeout:  10 * time.Second,
+		},
+		client:      client,
+		secretStore: KubernetesSecretStore{Namespace: "default"},
+	}
+
+	lease, err := provider.Start(context.Background(), StartRequest{
+		AgentID:      "agent-ready",
+		OwnerID:      "user-1",
+		Runtime:      "openclaw",
+		RuntimeToken: "tok-123",
+	})
+	if err != nil {
+		t.Fatalf("expected Start to succeed when pod becomes ready, got: %v", err)
+	}
+	if lease.AgentID != "agent-ready" {
+		t.Fatalf("unexpected lease agent id: %s", lease.AgentID)
+	}
+	if lease.Provider != "kubernetes" {
+		t.Fatalf("unexpected provider: %s", lease.Provider)
+	}
+
+	// Verify the pod stored in the fake client has Running phase.
+	pod, err := client.CoreV1().Pods("default").Get(context.Background(), "agent-agent-ready", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if pod.Status.Phase != corev1.PodRunning {
+		t.Fatalf("expected pod phase %s, got %s", corev1.PodRunning, pod.Status.Phase)
+	}
+	if len(pod.Status.ContainerStatuses) == 0 || !pod.Status.ContainerStatuses[0].Ready {
+		t.Fatal("expected container statuses to have ready container")
+	}
+}
+
+func TestKubernetesRuntimeProviderStartFailsOnPodReadyTimeout(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	// No reactor — the pod phase stays empty, so the readiness wait times out.
+	// Seed a warning event associated with the pod so the error includes event messages.
+	event := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-warning-1",
+			Namespace: "default",
+		},
+		InvolvedObject: corev1.ObjectReference{
+			Name: "agent-agent-timeout",
+		},
+		Type:    "Warning",
+		Reason:  "FailedCreatePodSandBox",
+		Message: "no runtime for \"kata\" is configured",
+	}
+	if _, err := client.CoreV1().Events("default").Create(context.Background(), event, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+
+	provider := &KubernetesRuntimeProvider{
+		cfg: KubernetesRuntimeProviderConfig{
+			Namespace:        "default",
+			GatewayURL:       "ws://gateway",
+			RuntimeClassName: "kata",
+			Images:           map[string]string{"openclaw": "image-openclaw:latest"},
+			WorkspaceSize:    "20Gi",
+			StorageClassName: "fast",
+			WorkspacePolicy:  "delete",
+			SecretStore:      "kubernetes",
+			PodReadyTimeout:  50 * time.Millisecond,
+		},
+		client:      client,
+		secretStore: KubernetesSecretStore{Namespace: "default"},
+	}
+
+	_, err := provider.Start(context.Background(), StartRequest{
+		AgentID:      "agent-timeout",
+		OwnerID:      "user-1",
+		Runtime:      "openclaw",
+		RuntimeToken: "tok-123",
+	})
+	if err == nil {
+		t.Fatal("expected Start to fail when pod never becomes ready")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "FailedCreatePodSandBox") {
+		t.Fatalf("expected error to contain event reason, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, `no runtime for "kata" is configured`) {
+		t.Fatalf("expected error to contain event message, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "not ready") {
+		t.Fatalf("expected error to mention 'not ready', got: %s", errMsg)
+	}
+}
+
+func TestKubernetesRuntimeProviderStartFailsOnPodFailedPhase(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	// Seed a pod that is already in Failed phase with a message.
+	failedPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "agent-agent-failed",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			RuntimeClassName: strPtr("kata"),
+			Containers:       []corev1.Container{{Name: "runtime", Image: "image:latest"}},
+		},
+		Status: corev1.PodStatus{
+			Phase:   corev1.PodFailed,
+			Reason:  "CrashLoopBackOff",
+			Message: "container runtime exited",
+		},
+	}
+	client = fake.NewSimpleClientset(failedPod)
+
+	provider := &KubernetesRuntimeProvider{
+		cfg: KubernetesRuntimeProviderConfig{
+			Namespace:        "default",
+			GatewayURL:       "ws://gateway",
+			RuntimeClassName: "kata",
+			Images:           map[string]string{"openclaw": "image-openclaw:latest"},
+			WorkspaceSize:    "20Gi",
+			StorageClassName: "fast",
+			WorkspacePolicy:  "delete",
+			SecretStore:      "kubernetes",
+			PodReadyTimeout:  10 * time.Second,
+		},
+		client:      client,
+		secretStore: KubernetesSecretStore{Namespace: "default"},
+	}
+
+	_, err := provider.Start(context.Background(), StartRequest{
+		AgentID:      "agent-failed",
+		OwnerID:      "user-1",
+		Runtime:      "openclaw",
+		RuntimeToken: "tok-123",
+	})
+	if err == nil {
+		t.Fatal("expected Start to fail when pod phase is Failed")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "failed") {
+		t.Fatalf("expected error to mention 'failed', got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "CrashLoopBackOff") {
+		t.Fatalf("expected error to contain reason 'CrashLoopBackOff', got: %s", errMsg)
+	}
+}
+
+func strPtr(s string) *string { return &s }

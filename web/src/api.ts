@@ -73,6 +73,44 @@ export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+// ── Error message helper ──
+// Extracts a user-facing error message from a non-OK Response.
+// - JSON responses: prefers `error` field, then `message` field.
+// - Plain-text responses (e.g. Go http.Error): uses the body text.
+// - Fallback: "Request failed (<status>)".
+// Never throws; returns the default message on failure.
+
+export async function readErrorMessage(res: Response): Promise<string> {
+  const defaultMsg = `Request failed (${res.status})`;
+  const contentType = res.headers.get('content-type') ?? '';
+
+  if (contentType.includes('application/json')) {
+    const fallbackBody = res.clone();
+    try {
+      const body = await res.json();
+      if (typeof body.error === 'string' && body.error.length > 0) return body.error;
+      if (typeof body.message === 'string' && body.message.length > 0) return body.message;
+    } catch {
+      try {
+        const text = await fallbackBody.text();
+        const trimmed = text.trim();
+        if (trimmed.length > 0) return trimmed;
+      } catch {
+        // Keep the default message when neither JSON nor text can be read.
+      }
+    }
+    return defaultMsg;
+  }
+
+  try {
+    const text = await res.text();
+    const trimmed = text.trim();
+    return trimmed || defaultMsg;
+  } catch {
+    return defaultMsg;
+  }
+}
+
 // ── Authenticated fetch wrapper ──
 
 async function apiFetch<T>(
@@ -94,15 +132,7 @@ async function apiFetch<T>(
   const res = await fetch(path, { ...options, headers });
 
   if (!res.ok) {
-    let msg = `Request failed (${res.status})`;
-    try {
-      const body = await res.json();
-      if (body.error) msg = body.error;
-      else if (body.message) msg = body.message;
-    } catch {
-      // ignore parse errors
-    }
-    throw new Error(msg);
+    throw new Error(await readErrorMessage(res));
   }
 
   // 204 No Content

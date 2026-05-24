@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -267,16 +268,25 @@ func sandboxProviderFromConfig(cfg config.Config) (sandbox.RuntimeProvider, erro
 	case "docker-demo":
 		return sandbox.DockerDemoProvider{GatewayURL: cfg.DockerGatewayURL, ImagePrefix: cfg.RuntimeImagePrefix}, nil
 	case "kubernetes":
+		var podReadyTimeout time.Duration
+		if cfg.PodReadyTimeout != "" {
+			var err error
+			podReadyTimeout, err = time.ParseDuration(cfg.PodReadyTimeout)
+			if err != nil {
+				return nil, fmt.Errorf("invalid pod_ready_timeout %q: %w", cfg.PodReadyTimeout, err)
+			}
+		}
 		return sandbox.NewKubernetesRuntimeProvider(sandbox.KubernetesRuntimeProviderConfig{
-			Namespace:         cfg.KubernetesNamespace,
-			GatewayURL:        cfg.KubernetesGatewayURL,
-			RuntimeClassName:  cfg.AgentRuntimeClassName,
-			Images:            cfg.RuntimeImages,
-			WorkspaceSize:     cfg.WorkspaceSize,
-			StorageClassName:  cfg.WorkspaceStorageClass,
-			WorkspacePolicy:   cfg.WorkspaceRetention,
-			SecretStore:       cfg.SecretStore,
-			NetworkPolicySpec: sandbox.NetworkPolicySpecFromConfig(cfg.NetworkPolicyEnabled, cfg.NetworkPolicyMode, cfg.NetworkPolicyCIDRs),
+			Namespace:          cfg.KubernetesNamespace,
+			GatewayURL:         cfg.KubernetesGatewayURL,
+			RuntimeClassName:   cfg.AgentRuntimeClassName,
+			Images:             cfg.RuntimeImages,
+			WorkspaceSize:      cfg.WorkspaceSize,
+			StorageClassName:   cfg.WorkspaceStorageClass,
+			WorkspacePolicy:    cfg.WorkspaceRetention,
+			SecretStore:        cfg.SecretStore,
+			NetworkPolicySpec:  sandbox.NetworkPolicySpecFromConfig(cfg.NetworkPolicyEnabled, cfg.NetworkPolicyMode, cfg.NetworkPolicyCIDRs),
+			PodReadyTimeout:    podReadyTimeout,
 		})
 	default:
 		return nil, errors.New("unsupported sandbox provider: " + cfg.SandboxProvider)
@@ -663,6 +673,14 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 		return
 	}
 	s.recordActivity("agent.start_requested", user.ID, agentID, "agent start requested", map[string]any{"runtime": agent.Runtime})
+	if s.logger != nil {
+		s.logger.Info("agent start requested",
+			"agent_id", agentID,
+			"user_id", user.ID,
+			"runtime", agent.Runtime,
+			"model", agent.Model,
+		)
+	}
 	lease, err := s.sandbox.Start(r.Context(), sandbox.StartRequest{
 		AgentID:              agentID,
 		OwnerID:              user.ID,
@@ -679,10 +697,29 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 		s.metrics.agentFailures.Inc()
 		s.metrics.runtimePodFailures.Inc()
 		s.recordActivity("sandbox.start_failed", user.ID, agentID, "sandbox start failed", map[string]any{"runtime": agent.Runtime, "error": err.Error()})
+		if s.logger != nil {
+			s.logger.Error("agent start failed",
+				"agent_id", agentID,
+				"user_id", user.ID,
+				"runtime", agent.Runtime,
+				"model", agent.Model,
+				"error", err,
+			)
+		}
 		s.writeStoreError(w, err)
 		return
 	}
 	s.metrics.agentStarts.Inc()
+	if s.logger != nil {
+		s.logger.Info("sandbox started",
+			"agent_id", agentID,
+			"user_id", user.ID,
+			"runtime", agent.Runtime,
+			"model", agent.Model,
+			"provider", lease.Provider,
+			"runtime_id", lease.ExternalID,
+		)
+	}
 	s.recordActivity("sandbox.started", user.ID, agentID, "sandbox started", map[string]any{"runtime": agent.Runtime, "provider": lease.Provider, "runtime_id": lease.ExternalID})
 	agent, _ = s.store.UpdateAgentState(r.Context(), agentID, "running")
 	s.writeJSON(w, http.StatusAccepted, agent)

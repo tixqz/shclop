@@ -19,6 +19,7 @@ header(){ echo -e "\n${BOLD}── $* ──${NC}"; }
 # ── Defaults ──────────────────────────────────────────────────
 K3S_VERSION="${K3S_VERSION:-latest}"
 KATA_VERSION="${KATA_VERSION:-stable-3.x}"
+KATA_STATIC_VERSION="${KATA_STATIC_VERSION:-3.2.0}"
 HELM_RELEASE_NAME="${HELM_RELEASE_NAME:-shclop}"
 SHCLOP_NAMESPACE="${SHCLOP_NAMESPACE:-default}"
 IMAGE_REPO="${IMAGE_REPO:-}"
@@ -67,6 +68,7 @@ Flags:
   --enable-observability  Install recommended observability stack (VictoriaMetrics k8s-stack, VictoriaLogs, Grafana)
   --observability-namespace NS  Namespace for observability components (default: monitoring)
   --grafana-host HOST     Explicit Grafana hostname (default: grafana.<public-ip>.nip.io)
+  --build-local-images    Build and import local container images (Docker BuildKit) instead of pulling from a registry
 USAGE
 }
 
@@ -89,6 +91,7 @@ tls_email=""
 enable_observability=false
 observability_namespace="$OBSERVABILITY_NAMESPACE"
 grafana_host=""
+build_local_images=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -111,6 +114,7 @@ while [[ $# -gt 0 ]]; do
     --enable-observability) enable_observability=true; shift ;;
     --observability-namespace) [[ $# -lt 2 ]] && { usage; exit 2; }; observability_namespace="$2"; shift 2 ;;
     --grafana-host) [[ $# -lt 2 ]] && { usage; exit 2; }; grafana_host="$2"; shift 2 ;;
+    --build-local-images) build_local_images=true; shift ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
@@ -336,38 +340,51 @@ install_kata_ubuntu() {
     return 0
   fi
   if $dry_run; then
-    warn "[dry-run] installing kata-runtime from openSUSE repository"
+    warn "[dry-run] installing kata-static ${KATA_STATIC_VERSION} from GitHub release"
     return 0
   fi
-  info "Adding Kata repository..."
+
+  info "Installing prerequisites..."
+  apt-get update -qq
+  apt-get install -y -qq curl ca-certificates xz-utils
+
   local arch
   arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) kata_arch="x86_64" ;;
+    aarch64|arm64) kata_arch="arm64" ;;
+    *) fail "unsupported architecture: $arch (only x86_64/amd64 and aarch64/arm64 are supported)" ;;
+  esac
 
-  local os_codename
-  os_codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-  [[ -z "$os_codename" ]] && os_codename="noble"
+  local bootstrap_dir="$REPO_DIR/.bootstrap"
+  mkdir -p "$bootstrap_dir"
 
-  local repo_url="https://download.opensuse.org/repositories/home:/katacontainers:/releases:/$(arch):/${KATA_VERSION}/xUbuntu_$(lsb_release -rs 2>/dev/null || echo '24.04')"
+  local tarball="kata-static-${KATA_STATIC_VERSION}-${kata_arch}.tar.xz"
+  local url="https://github.com/kata-containers/kata-containers/releases/download/${KATA_STATIC_VERSION}/${tarball}"
 
-  apt-get update -qq
-  apt-get install -y -qq software-properties-common apt-transport-https ca-certificates
+  info "Downloading ${tarball}..."
+  curl -fsSL "$url" -o "$bootstrap_dir/$tarball" || fail "failed to download kata-static tarball from $url"
 
-  echo "deb [signed-by=/usr/share/keyrings/kata-archive-keyring.gpg] ${repo_url}/ /" > /etc/apt/sources.list.d/kata.list
-
-  curl -fsSL "${repo_url}/Release.key" 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/kata-archive-keyring.gpg 2>/dev/null
-
-  apt-get update -qq
-  apt-get install -y -qq kata-runtime 2>/dev/null || {
-    warn "Repository install failed, trying snap..."
-    snap install kata-containers --classic 2>/dev/null && {
-      ln -sf /snap/kata-containers/current/bin/kata-runtime /usr/local/bin/kata-runtime
-    } || warn "Failed to install kata-runtime. Install manually: https://github.com/kata-containers/kata-containers"
+  info "Extracting to / ..."
+  tar -xJf "$bootstrap_dir/$tarball" -C / || {
+    rm -f "$bootstrap_dir/$tarball"
+    fail "failed to extract kata-static tarball"
   }
+  rm -f "$bootstrap_dir/$tarball"
+
+  # Symlink binaries into PATH
+  local kata_bin_src="/opt/kata/bin"
+  if [[ -f "$kata_bin_src/kata-runtime" ]]; then
+    ln -sf "$kata_bin_src/kata-runtime" /usr/local/bin/kata-runtime
+  fi
+  if [[ -f "$kata_bin_src/containerd-shim-kata-v2" ]]; then
+    ln -sf "$kata_bin_src/containerd-shim-kata-v2" /usr/local/bin/containerd-shim-kata-v2
+  fi
 
   if is_kata_installed; then
     step "kata-runtime installed: $(kata_version)"
   else
-    warn "kata-runtime not found after install. Continuing, but nested virt may not work."
+    fail "kata-runtime is still missing after static install. The release tarball may be incomplete or architecture mismatch."
   fi
 }
 
@@ -376,6 +393,11 @@ configure_containerd_kata() {
   if $dry_run; then
     warn "[dry-run] creating $K3S_CONTAINERD_DIR/config.toml.tmpl with kata runtime"
     return 0
+  fi
+
+  # Validate that the Kata containerd shim binary is present before writing config
+  if [[ ! -x /opt/kata/bin/containerd-shim-kata-v2 ]] && [[ ! -x /usr/local/bin/containerd-shim-kata-v2 ]]; then
+    fail "Kata containerd shim not found at /opt/kata/bin/containerd-shim-kata-v2. Install Kata first (--install-deps)."
   fi
 
   mkdir -p "$K3S_CONTAINERD_DIR"
@@ -462,6 +484,64 @@ overhead:
     cpu: "250m"
 RUNTIMECLASS
   step "RuntimeClass 'kata' created"
+}
+
+validate_kata_runtimeclass() {
+  header "Validating Kata RuntimeClass"
+  if $dry_run; then
+    warn "[dry-run] creating smoke test pod with runtimeClassName: kata and waiting for completion"
+    return 0
+  fi
+
+  # Ensure namespace exists
+  local ns="${SHCLOP_NAMESPACE:-default}"
+  kubectl get namespace "$ns" &>/dev/null || kubectl create namespace "$ns"
+
+  local pod_name="kata-smoke-test-$(date +%s)"
+
+  kubectl run "$pod_name" --image=busybox:1.36 --restart=Never \
+    --namespace "$ns" \
+    --overrides='{"spec":{"runtimeClassName":"kata"}}' \
+    -- true || {
+    fail "Failed to create smoke test pod for Kata validation"
+  }
+
+  info "Waiting up to 120s for pod $pod_name to complete..."
+
+  # Check initial phase — the pod may have already completed
+  local phase
+  phase="$(kubectl get pod "$pod_name" --namespace "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+
+  if [[ "$phase" != "Succeeded" && "$phase" != "Failed" ]]; then
+    # Pod still running/pending: wait for Ready first
+    if ! kubectl wait --for=condition=Ready "pod/$pod_name" --namespace "$ns" --timeout=30s 2>/dev/null; then
+      # May have completed without being Ready; refresh phase
+      phase="$(kubectl get pod "$pod_name" --namespace "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    fi
+  fi
+
+  if [[ "$phase" != "Succeeded" && "$phase" != "Failed" ]]; then
+    # Still not done: wait for final completion
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$pod_name" --namespace "$ns" --timeout=90s 2>/dev/null || true
+    phase="$(kubectl get pod "$pod_name" --namespace "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  fi
+
+  if [[ "$phase" != "Succeeded" ]]; then
+    error "Kata smoke test pod failed (phase: ${phase:-unknown})"
+    echo ""
+    error "Pod description:"
+    kubectl describe pod "$pod_name" --namespace "$ns" 2>/dev/null || true
+    echo ""
+    error "Recent events for pod:"
+    kubectl get events --namespace "$ns" --field-selector "involvedObject.name=$pod_name" 2>/dev/null || true
+    echo ""
+    kubectl delete pod "$pod_name" --namespace "$ns" --ignore-not-found 2>/dev/null || true
+    fail "Kata RuntimeClass validation failed. Kata may not be functional. Fix the issue and re-run."
+  fi
+
+  # Clean up on success
+  kubectl delete pod "$pod_name" --namespace "$ns" --ignore-not-found 2>/dev/null || true
+  step "Kata RuntimeClass validated (pod $pod_name completed successfully)"
 }
 
 install_cert_manager() {
@@ -629,17 +709,104 @@ install_observability_stack() {
 }
 
 # ═══════════════════════════════════════════════════════════════
+#  LOCAL IMAGE BUILD (Docker BuildKit)
+# ═══════════════════════════════════════════════════════════════
+install_docker_buildkit() {
+  header "Installing Docker + BuildKit"
+  if $dry_run; then
+    warn "[dry-run] installing Docker and docker-buildx-plugin"
+    return 0
+  fi
+
+  if command -v docker &>/dev/null; then
+    step "Docker already installed: $(docker --version 2>/dev/null || true)"
+  else
+    info "Docker not found, installing from official repository..."
+    apt-get update -qq
+    apt-get install -y -qq ca-certificates curl
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    local os_codename
+    os_codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+    [[ -z "$os_codename" ]] && os_codename="noble"
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${os_codename} stable" \
+      > /etc/apt/sources.list.d/docker.list
+    apt-get update -qq
+    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    step "Docker installed"
+  fi
+
+  if docker buildx version &>/dev/null; then
+    step "Docker BuildX available: $(docker buildx version 2>/dev/null | head -1)"
+  else
+    info "BuildX plugin not found, installing docker-buildx-plugin..."
+    apt-get update -qq
+    apt-get install -y -qq docker-buildx-plugin 2>/dev/null || fail "failed to install docker-buildx-plugin"
+    docker buildx version &>/dev/null || fail "docker-buildx-plugin installed but docker buildx is unavailable"
+  fi
+
+  if ! systemctl is-active --quiet docker 2>/dev/null; then
+    info "Starting Docker..."
+    systemctl enable docker 2>/dev/null || true
+    systemctl start docker 2>/dev/null || true
+    local i=0
+    while ! docker info &>/dev/null; do
+      sleep 2
+      i=$((i+1))
+      [[ $i -gt 15 ]] && { warn "Docker did not start within 30s"; break; }
+    done
+    docker info &>/dev/null && step "Docker is running"
+  fi
+}
+
+build_local_images() {
+  header "Building and importing local images"
+  if $dry_run; then
+    warn "[dry-run] DOCKER_BUILDKIT=1 docker build -t shclop:${IMAGE_TAG} -f Dockerfile $REPO_DIR"
+    warn "[dry-run] DOCKER_BUILDKIT=1 docker build -t shclop-runtime-openclaw:${IMAGE_TAG} -f runtime/openclaw/Dockerfile $REPO_DIR"
+    warn "[dry-run] DOCKER_BUILDKIT=1 docker build -t shclop-runtime-nanoclaw:${IMAGE_TAG} -f runtime/nanoclaw/Dockerfile $REPO_DIR"
+    warn "[dry-run] docker save ... | k3s ctr images import -"
+    return 0
+  fi
+
+  if ! docker info &>/dev/null; then
+    fail "Docker is not running. Ensure Docker is installed and started."
+  fi
+
+  # Build images
+  info "Building shclop:${IMAGE_TAG} ..."
+  DOCKER_BUILDKIT=1 docker build -t "shclop:${IMAGE_TAG}" -f "$REPO_DIR/Dockerfile" "$REPO_DIR" || fail "Failed to build shclop image"
+
+  info "Building shclop-runtime-openclaw:${IMAGE_TAG} ..."
+  DOCKER_BUILDKIT=1 docker build -t "shclop-runtime-openclaw:${IMAGE_TAG}" -f "$REPO_DIR/runtime/openclaw/Dockerfile" "$REPO_DIR" || fail "Failed to build shclop-runtime-openclaw image"
+
+  info "Building shclop-runtime-nanoclaw:${IMAGE_TAG} ..."
+  DOCKER_BUILDKIT=1 docker build -t "shclop-runtime-nanoclaw:${IMAGE_TAG}" -f "$REPO_DIR/runtime/nanoclaw/Dockerfile" "$REPO_DIR" || fail "Failed to build shclop-runtime-nanoclaw image"
+
+  step "All images built locally"
+
+  # Import into k3s containerd
+  info "Importing images into k3s containerd..."
+  docker save "shclop:${IMAGE_TAG}" | k3s ctr images import - || fail "Failed to import shclop image into k3s"
+  docker save "shclop-runtime-openclaw:${IMAGE_TAG}" | k3s ctr images import - || fail "Failed to import shclop-runtime-openclaw image into k3s"
+  docker save "shclop-runtime-nanoclaw:${IMAGE_TAG}" | k3s ctr images import - || fail "Failed to import shclop-runtime-nanoclaw image into k3s"
+
+  step "Images imported into k3s containerd"
+}
+
+# ═══════════════════════════════════════════════════════════════
 #  DEPLOY
 # ═══════════════════════════════════════════════════════════════
 deploy_shclop() {
-  header "Деплой shclop"
+  header "Deploy shclop"
 
-  # Проверяем наличие Helm chart
+  # Check Helm chart presence
   if [[ ! -d "$CHARTS_DIR/shclop" ]]; then
-    fail "Helm chart не найден: $CHARTS_DIR/shclop (запусти скрипт из корня репозитория)"
+    fail "Helm chart not found: $CHARTS_DIR/shclop (run the script from the repository root)"
   fi
 
-  # Генерируем values, если не переданы
+  # Generate values when none are provided
   local values_file=""
   if [[ -n "$values" ]]; then
     values_file="$values"
@@ -658,32 +825,32 @@ deploy_shclop() {
     return 0
   fi
 
-  # Проверяем helm
+  # Check Helm
   if ! command -v helm &>/dev/null; then
-    info "Helm не найден, устанавливаю..."
+    info "Helm not found, installing..."
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-    step "Helm установлен"
+    step "Helm installed"
   fi
 
-  # Устанавливаем или обновляем
+  # Install or upgrade
   if helm list -n "$SHCLOP_NAMESPACE" -q 2>/dev/null | grep -q "^${HELM_RELEASE_NAME}$"; then
-    info "Релиз '$HELM_RELEASE_NAME' уже существует, обновляю..."
+    info "Release '$HELM_RELEASE_NAME' already exists, upgrading..."
     helm upgrade "$HELM_RELEASE_NAME" "$CHARTS_DIR/shclop" \
       --namespace "$SHCLOP_NAMESPACE" \
       -f "$values_file" \
       --wait
-    step "shclop обновлён"
+    step "shclop upgraded"
   else
-    info "Устанавливаю shclop..."
+    info "Installing shclop..."
     helm install "$HELM_RELEASE_NAME" "$CHARTS_DIR/shclop" \
       --namespace "$SHCLOP_NAMESPACE" \
       --create-namespace \
       -f "$values_file" \
       --wait
-    step "shclop установлен"
+    step "shclop installed"
   fi
 
-  # Показываем статус
+  # Show status
   echo ""
   kubectl get pods -n "$SHCLOP_NAMESPACE" -l app.kubernetes.io/instance="$HELM_RELEASE_NAME"
   echo ""
@@ -751,7 +918,7 @@ agentRuntime:
   runtimeClassName: kata
 VALUESYAML
 
-  # Добавляем image repo, если указан
+  # Add image repo when provided
   if [[ -n "$IMAGE_REPO" ]]; then
     cat >> "$out" <<VALUESYAML
 
@@ -766,14 +933,17 @@ agentRuntime:
     openclaw: ${IMAGE_REPO}-runtime-openclaw:${IMAGE_TAG}
 VALUESYAML
   else
-    # Default dev images
+    # Local/dev images (tag overridable via IMAGE_TAG)
     cat >> "$out" <<VALUESYAML
+
+image:
+  tag: ${IMAGE_TAG}
 
 agentRuntime:
   runtimeClassName: kata
   images:
-    nanoclaw: shclop-runtime-nanoclaw:latest
-    openclaw: shclop-runtime-openclaw:latest
+    nanoclaw: shclop-runtime-nanoclaw:${IMAGE_TAG}
+    openclaw: shclop-runtime-openclaw:${IMAGE_TAG}
 VALUESYAML
   fi
 
@@ -811,41 +981,50 @@ action_install() {
   check_hardware
   check_kvm
 
-  # 1. Системные зависимости
+  # 1. System dependencies
   if $install_deps; then
-    info "Фаза: установка системных зависимостей"
+    info "Phase: installing system dependencies"
     install_k3s
     install_kata_ubuntu
     configure_containerd_kata
     wait_for_k3s
   elif $dry_run; then
-    warn "[dry-run] без --install-deps не могу проверить K3s/Kata, показываю общий план"
-    warn "[dry-run] установка K3s"
-    warn "[dry-run] установка Kata Containers"
-    warn "[dry-run] настройка containerd для Kata"
-    warn "[dry-run] рестарт K3s"
+    warn "[dry-run] --install-deps not set, showing general plan"
+    warn "[dry-run] install K3s"
+    warn "[dry-run] install Kata Containers"
+    warn "[dry-run] configure containerd for Kata"
+    warn "[dry-run] restart K3s"
   else
-    info "Фаза: проверка существующих зависимостей"
+    info "Phase: checking existing dependencies"
     if ! is_k3s_installed || ! is_k3s_running; then
-      fail "K3s не установлен/не запущен. Запусти с --install-deps или установи K3s вручную"
+      fail "K3s is not installed or not running. Run with --install-deps or install K3s manually."
     fi
     if ! is_kata_installed; then
-      fail "Kata Containers не установлены. Запусти с --install-deps или установи вручную"
+      fail "Kata Containers are not installed. Run with --install-deps or install manually."
     fi
-    step "K3s и Kata в порядке"
+    step "K3s and Kata are ready"
   fi
 
   # 2. RuntimeClass
   create_runtimeclass
 
+  # 2b. Validate Kata RuntimeClass with smoke test
+  validate_kata_runtimeclass
+
   # 3. Ingress TLS (optional)
   install_cert_manager
   create_clusterissuer
 
-  # 4. Деплой shclop
+  # 4. Local image build (optional)
+  if $build_local_images; then
+    install_docker_buildkit
+    build_local_images
+  fi
+
+  # 5. Deploy shclop
   deploy_shclop
 
-  # 5. Observability stack (optional)
+  # 6. Observability stack (optional)
   install_observability_stack
 
   if ! $dry_run; then
@@ -866,13 +1045,13 @@ action_install() {
 #  DESTROY
 # ═══════════════════════════════════════════════════════════════
 destroy_helm() {
-  header "Удаление Helm release"
+  header "Remove Helm release"
   if ! command -v helm &>/dev/null; then
-    warn "Helm не найден, пропускаю"
+    warn "Helm not found, skipping"
     return 0
   fi
   if ! helm list -n "$SHCLOP_NAMESPACE" -q 2>/dev/null | grep -q "^${HELM_RELEASE_NAME}$"; then
-    warn "Релиз '$HELM_RELEASE_NAME' не найден"
+    warn "Release '$HELM_RELEASE_NAME' not found"
     return 0
   fi
   if $dry_run; then
@@ -880,22 +1059,22 @@ destroy_helm() {
     return 0
   fi
   if [[ "$yes" != "true" ]]; then
-    read -r -p "Удалить Helm релиз '$HELM_RELEASE_NAME'? [y/N] " confirm
-    [[ "$confirm" =~ ^[yY] ]] || { info "пропущено"; return 0; }
+    read -r -p "Delete Helm release '$HELM_RELEASE_NAME'? [y/N] " confirm
+    [[ "$confirm" =~ ^[yY] ]] || { info "skipped"; return 0; }
   fi
   helm uninstall "$HELM_RELEASE_NAME" -n "$SHCLOP_NAMESPACE" 2>/dev/null || true
   kubectl delete namespace "$SHCLOP_NAMESPACE" --ignore-not-found 2>/dev/null || true
-  step "Helm релиз удалён"
+  step "Helm release deleted"
 }
 
 destroy_k3s() {
   if ! $remove_k3s; then
-    info "Пропускаю удаление K3s (используй --remove-k3s)"
+    info "Skipping K3s removal (use --remove-k3s)"
     return 0
   fi
-  header "Удаление K3s"
+  header "Remove K3s"
   if ! is_k3s_installed; then
-    warn "K3s не установлен"
+    warn "K3s is not installed"
     return 0
   fi
   if $dry_run; then
@@ -903,8 +1082,8 @@ destroy_k3s() {
     return 0
   fi
   if [[ "$yes" != "true" ]]; then
-    read -r -p "Удалить K3s и все workloads? [y/N] " confirm
-    [[ "$confirm" =~ ^[yY] ]] || { info "пропущено"; return 0; }
+    read -r -p "Delete K3s and all workloads? [y/N] " confirm
+    [[ "$confirm" =~ ^[yY] ]] || { info "skipped"; return 0; }
   fi
   if [[ -f /usr/local/bin/k3s-uninstall.sh ]]; then
     bash /usr/local/bin/k3s-uninstall.sh
@@ -912,26 +1091,26 @@ destroy_k3s() {
     /usr/local/bin/k3s-uninstall.sh 2>/dev/null || \
       curl -sfL https://get.k3s.io | sh -s - --uninstall
   fi
-  step "K3s удалён"
+  step "K3s deleted"
 }
 
 destroy_kata() {
   if ! $remove_kata; then
-    info "Пропускаю удаление Kata Containers (используй --remove-kata)"
+    info "Skipping Kata Containers removal (use --remove-kata)"
     return 0
   fi
-  header "Удаление Kata Containers"
+  header "Remove Kata Containers"
   if ! is_kata_installed; then
-    warn "Kata не установлен"
+    warn "Kata is not installed"
     return 0
   fi
   if $dry_run; then
-    warn "[dry-run] удаление kata-runtime"
+    warn "[dry-run] remove kata-runtime"
     return 0
   fi
   if [[ "$yes" != "true" ]]; then
-    read -r -p "Удалить Kata Containers? [y/N] " confirm
-    [[ "$confirm" =~ ^[yY] ]] || { info "пропущено"; return 0; }
+    read -r -p "Delete Kata Containers? [y/N] " confirm
+    [[ "$confirm" =~ ^[yY] ]] || { info "skipped"; return 0; }
   fi
   # Ubuntu/Debian
   if dpkg -l kata-runtime &>/dev/null 2>&1; then
@@ -940,43 +1119,43 @@ destroy_kata() {
   fi
   # Snap
   snap remove kata-containers 2>/dev/null || true
-  step "Kata Containers удалён"
+  step "Kata Containers deleted"
 }
 
 destroy_data() {
   if ! $purge_data; then
-    info "Пропускаю удаление данных (используй --purge-data)"
+    info "Skipping data removal (use --purge-data)"
     return 0
   fi
-  header "Очистка данных"
+  header "Clean data"
   if $dry_run; then
-    warn "[dry-run] удаление PVC, workspace данных"
+    warn "[dry-run] delete PVCs and workspace data"
     return 0
   fi
   if [[ "$yes" != "true" ]]; then
-    read -r -p "Удалить все PVC и workspace данные? [y/N] " confirm
-    [[ "$confirm" =~ ^[yY] ]] || { info "пропущено"; return 0; }
+    read -r -p "Delete all PVCs and workspace data? [y/N] " confirm
+    [[ "$confirm" =~ ^[yY] ]] || { info "skipped"; return 0; }
   fi
   kubectl delete pvc --all -n "$SHCLOP_NAMESPACE" 2>/dev/null || true
   kubectl delete pods --all -n "$SHCLOP_NAMESPACE" 2>/dev/null || true
   rm -rf /var/lib/rancher/k3s/storage/* 2>/dev/null || true
-  step "Данные очищены"
+  step "Data cleaned"
 }
 
 action_destroy() {
   require_root
   if [[ "$yes" != "true" ]]; then
     echo ""
-    warn "⚠️  Это удалит shclop и все связанные ресурсы."
-    read -r -p "Введи 'delete shclop' для подтверждения: " confirm
-    [[ "$confirm" == "delete shclop" ]] || { fail "Отменено"; }
+    warn "⚠️  This will delete shclop and all related resources."
+    read -r -p "Type 'delete shclop' to confirm: " confirm
+    [[ "$confirm" == "delete shclop" ]] || { fail "Cancelled"; }
   fi
   destroy_helm
   destroy_data
   destroy_kata
   destroy_k3s
   echo ""
-  info "✅ Удаление завершено"
+  info "✅ Removal completed"
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -984,8 +1163,8 @@ action_destroy() {
 # ═══════════════════════════════════════════════════════════════
 action_reset() {
   require_root
-  info "Reset: удаляю Helm release и переустанавливаю..."
-  # Быстрый destroy без подтверждений (только Helm)
+  info "Reset: deleting Helm release and reinstalling..."
+  # Fast destroy without confirmations (Helm only)
   local old_yes="$yes"
   yes=true
   purge_data=false
@@ -995,7 +1174,7 @@ action_reset() {
   yes="$old_yes"
   action_install
   echo ""
-  info "✅ Reset завершён"
+  info "✅ Reset completed"
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -1021,6 +1200,7 @@ if [[ -n "$remote" ]]; then
   $remove_kata  && remote_argv+=("--remove-kata")
   $enable_ingress && remote_argv+=("--enable-ingress")
   $enable_observability && remote_argv+=("--enable-observability")
+  $build_local_images && remote_argv+=("--build-local-images")
   [[ -n "$values" ]] && remote_argv+=("--values" "$values")
   [[ -n "$IMAGE_REPO" ]] && remote_argv+=("--image-repo" "$IMAGE_REPO")
   [[ -n "$IMAGE_TAG" ]] && remote_argv+=("--image-tag" "$IMAGE_TAG")
@@ -1032,7 +1212,7 @@ if [[ -n "$remote" ]]; then
   [[ -n "$observability_namespace" && "$observability_namespace" != "$OBSERVABILITY_NAMESPACE" ]] && remote_argv+=("--observability-namespace" "$observability_namespace")
   [[ -n "$grafana_host" ]] && remote_argv+=("--grafana-host" "$grafana_host")
 
-  info "Выполнение на $remote..."
+  info "Running on $remote..."
   ssh "$remote" "bash -s -- $(printf '%q ' "${remote_argv[@]}")" < "$0"
 else
   run_local

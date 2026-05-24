@@ -27,6 +27,7 @@ type Config struct {
 	NetworkPolicyMode     string
 	NetworkPolicyCIDRs    string
 	SecretStore           string
+	PodReadyTimeout       string
 	LogLevel              string
 	Metrics               bool
 	StaticDir             string
@@ -65,6 +66,7 @@ func Default() Config {
 		NetworkPolicyMode:     env("SHCLOP_NETWORK_POLICY_MODE", "restricted"),
 		NetworkPolicyCIDRs:    os.Getenv("SHCLOP_NETWORK_POLICY_ALLOWED_CIDRS"),
 		SecretStore:           env("SHCLOP_RUNTIME_SECRET_STORE", "kubernetes"),
+		PodReadyTimeout:       os.Getenv("SHCLOP_POD_READY_TIMEOUT"),
 		LogLevel:              "info",
 		Metrics:               true,
 		StaticDir:             "web/dist",

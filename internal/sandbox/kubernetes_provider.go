@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -29,6 +30,10 @@ type KubernetesRuntimeProviderConfig struct {
 	LLMGatewayBaseURL    string
 	LLMGatewaySecretName string
 	LLMGatewaySecretKey  string
+	// PodReadyTimeout controls how long Start waits for the pod to become
+	// Ready before returning an error. Zero or negative means the default
+	// of 120 seconds is used.
+	PodReadyTimeout time.Duration
 }
 
 type KubernetesRuntimeProvider struct {
@@ -161,7 +166,147 @@ func (p *KubernetesRuntimeProvider) Start(ctx context.Context, request StartRequ
 		return RuntimeLease{}, err
 	}
 
+	if err := p.waitForPodReady(ctx, pod.Name); err != nil {
+		return RuntimeLease{}, err
+	}
+
 	return RuntimeLease{AgentID: request.AgentID, Provider: "kubernetes", Runtime: runtime, ExternalID: pod.Name}, nil
+}
+
+// defaultPodReadyTimeout is the default maximum time to wait for a pod
+// to become Ready after creation.
+const defaultPodReadyTimeout = 120 * time.Second
+
+// pollInterval is the interval between pod readiness checks.
+const podReadinessPollInterval = 500 * time.Millisecond
+
+// waitForPodReady polls the pod status until the pod is Running and all its
+// containers are Ready, the pod enters a terminal Failed phase, or the
+// timeout expires. On timeout or failure, it collects warning Events
+// associated with the pod and returns a descriptive error.
+func (p *KubernetesRuntimeProvider) waitForPodReady(ctx context.Context, podName string) error {
+	timeout := p.cfg.PodReadyTimeout
+	if timeout <= 0 {
+		timeout = defaultPodReadyTimeout
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for {
+		select {
+		case <-waitCtx.Done():
+			// Timeout or outer context cancelled — collect diagnostic info.
+			return p.collectPodFailureInfo(ctx, podName, timeout)
+		default:
+		}
+
+		pod, err := p.client.CoreV1().Pods(p.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("get pod %q during readiness wait: %w", podName, err)
+		}
+
+		switch pod.Status.Phase {
+		case corev1.PodRunning:
+			if allContainersReady(pod) {
+				return nil
+			}
+		case corev1.PodFailed:
+			return fmt.Errorf("pod %q failed: %s", podName, buildPodErrorMessage(pod))
+		case corev1.PodSucceeded:
+			// For agent runtime pods, Succeeded is not a useful state.
+			// Continue waiting.
+		}
+
+		time.Sleep(podReadinessPollInterval)
+	}
+}
+
+// allContainersReady returns true if at least one container status exists and
+// all container statuses report Ready.
+func allContainersReady(pod *corev1.Pod) bool {
+	if len(pod.Status.ContainerStatuses) == 0 {
+		return false
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if !cs.Ready {
+			return false
+		}
+	}
+	return true
+}
+
+// buildPodErrorMessage constructs a human-readable string from a failed pod's
+// status fields and container state information.
+func buildPodErrorMessage(pod *corev1.Pod) string {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("phase=%s", pod.Status.Phase))
+	if pod.Status.Reason != "" {
+		parts = append(parts, fmt.Sprintf("reason=%s", pod.Status.Reason))
+	}
+	if pod.Status.Message != "" {
+		parts = append(parts, fmt.Sprintf("message=%s", pod.Status.Message))
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil {
+			msg := fmt.Sprintf("container %q waiting: %s", cs.Name, cs.State.Waiting.Reason)
+			if cs.State.Waiting.Message != "" {
+				msg += ": " + cs.State.Waiting.Message
+			}
+			parts = append(parts, msg)
+		}
+		if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+			msg := fmt.Sprintf("container %q terminated: %s (exit %d)", cs.Name, cs.State.Terminated.Reason, cs.State.Terminated.ExitCode)
+			if cs.State.Terminated.Message != "" {
+				msg += ": " + cs.State.Terminated.Message
+			}
+			parts = append(parts, msg)
+		}
+		if cs.LastTerminationState.Terminated != nil {
+			parts = append(parts, fmt.Sprintf("container %q previously terminated: %s (exit %d)", cs.Name, cs.LastTerminationState.Terminated.Reason, cs.LastTerminationState.Terminated.ExitCode))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// collectPodFailureInfo gathers diagnostic information when the readiness
+// wait times out — pod phase and warning events — and returns an error.
+func (p *KubernetesRuntimeProvider) collectPodFailureInfo(ctx context.Context, podName string, timeout time.Duration) error {
+	var eventMsgs []string
+
+	events, err := p.client.CoreV1().Events(p.cfg.Namespace).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, ev := range events.Items {
+			if ev.InvolvedObject.Name == podName && ev.Type == "Warning" {
+				msg := fmt.Sprintf("%s: %s", ev.Reason, ev.Message)
+				if ev.Count > 1 {
+					msg = fmt.Sprintf("%s (x%d)", msg, ev.Count)
+				}
+				eventMsgs = append(eventMsgs, msg)
+			}
+		}
+	}
+
+	// Also check container waiting reasons from the pod status.
+	pod, err := p.client.CoreV1().Pods(p.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	phaseStr := ""
+	if err == nil {
+		phaseStr = string(pod.Status.Phase)
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Waiting != nil {
+				msg := fmt.Sprintf("container %q waiting: %s", cs.Name, cs.State.Waiting.Reason)
+				if cs.State.Waiting.Message != "" {
+					msg += ": " + cs.State.Waiting.Message
+				}
+				eventMsgs = append(eventMsgs, msg)
+			}
+		}
+	}
+
+	if len(eventMsgs) > 0 {
+		return fmt.Errorf("pod %q not ready after %v (phase=%s): %s", podName, timeout, phaseStr, strings.Join(eventMsgs, "; "))
+	}
+	return fmt.Errorf("pod %q not ready after %v (phase=%s)", podName, timeout, phaseStr)
 }
 
 func (p *KubernetesRuntimeProvider) validateSecretKey(ctx context.Context, name, key string) error {
