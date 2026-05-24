@@ -33,6 +33,13 @@ MIN_DISK_GIB="${MIN_DISK_GIB:-30}"
 OBSERVABILITY_NAMESPACE="${OBSERVABILITY_NAMESPACE:-monitoring}"
 VICTORIA_METRICS_STACK_VERSION="${VICTORIA_METRICS_STACK_VERSION:-}"
 VICTORIA_LOGS_VERSION="${VICTORIA_LOGS_VERSION:-}"
+LITELLM_RELEASE_NAME="${LITELLM_RELEASE_NAME:-litellm}"
+LITELLM_NAMESPACE="${LITELLM_NAMESPACE:-$SHCLOP_NAMESPACE}"
+LITELLM_IMAGE_TAG="${LITELLM_IMAGE_TAG:-v1.85.0}"
+LITELLM_MODEL_ALIAS="${LITELLM_MODEL_ALIAS:-deepseek-v4-flash}"
+LITELLM_OPENROUTER_MODEL="${LITELLM_OPENROUTER_MODEL:-deepseek/deepseek-v4-flash:free}"
+LITELLM_OPENROUTER_SECRET="${LITELLM_OPENROUTER_SECRET:-litellm-openrouter}"
+LITELLM_MASTER_SECRET="${LITELLM_MASTER_SECRET:-litellm-master}"
 
 # ── Flag parsing ──────────────────────────────────────────────
 usage() {
@@ -69,6 +76,10 @@ Flags:
   --observability-namespace NS  Namespace for observability components (default: monitoring)
   --grafana-host HOST     Explicit Grafana hostname (default: grafana.<public-ip>.nip.io)
   --build-local-images    Build and import local container images (Docker BuildKit) instead of pulling from a registry
+  --enable-litellm        Install internal LiteLLM gateway (ClusterIP only) for LLM traffic
+  --litellm-namespace NS  Namespace for LiteLLM (default: shclop namespace)
+  --litellm-release NAME  Helm release name for LiteLLM (default: litellm)
+  --litellm-model MODEL   OpenRouter model id exposed through LiteLLM (default: deepseek/deepseek-v4-flash:free)
 USAGE
 }
 
@@ -92,6 +103,7 @@ enable_observability=false
 observability_namespace="$OBSERVABILITY_NAMESPACE"
 grafana_host=""
 build_local_images=false
+enable_litellm=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -115,6 +127,10 @@ while [[ $# -gt 0 ]]; do
     --observability-namespace) [[ $# -lt 2 ]] && { usage; exit 2; }; observability_namespace="$2"; shift 2 ;;
     --grafana-host) [[ $# -lt 2 ]] && { usage; exit 2; }; grafana_host="$2"; shift 2 ;;
     --build-local-images) build_local_images=true; shift ;;
+    --enable-litellm) enable_litellm=true; shift ;;
+    --litellm-namespace) [[ $# -lt 2 ]] && { usage; exit 2; }; LITELLM_NAMESPACE="$2"; shift 2 ;;
+    --litellm-release) [[ $# -lt 2 ]] && { usage; exit 2; }; LITELLM_RELEASE_NAME="$2"; shift 2 ;;
+    --litellm-model) [[ $# -lt 2 ]] && { usage; exit 2; }; LITELLM_OPENROUTER_MODEL="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
@@ -722,6 +738,146 @@ install_observability_stack() {
 }
 
 # ═══════════════════════════════════════════════════════════════
+#  LITELLM GATEWAY
+# ═══════════════════════════════════════════════════════════════
+litellm_service_url() {
+  echo "http://${LITELLM_RELEASE_NAME}.${LITELLM_NAMESPACE}.svc.cluster.local:4000/v1"
+}
+
+ensure_litellm_secrets() {
+  local openrouter_key="${OPENROUTER_API_KEY:-${LITELLM_OPENROUTER_API_KEY:-}}"
+  local master_key="${LITELLM_MASTER_KEY:-}"
+
+  if kubectl get secret -n "$LITELLM_NAMESPACE" "$LITELLM_OPENROUTER_SECRET" >/dev/null 2>&1; then
+    step "LiteLLM OpenRouter Secret exists: ${LITELLM_OPENROUTER_SECRET}"
+  else
+    [[ -n "$openrouter_key" ]] || fail "OPENROUTER_API_KEY or LITELLM_OPENROUTER_API_KEY is required to create LiteLLM Secret '${LITELLM_OPENROUTER_SECRET}'"
+    kubectl create secret generic "$LITELLM_OPENROUTER_SECRET" \
+      --namespace "$LITELLM_NAMESPACE" \
+      --from-literal=OPENROUTER_API_KEY="$openrouter_key" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+    step "LiteLLM OpenRouter Secret created: ${LITELLM_OPENROUTER_SECRET}"
+  fi
+
+  if kubectl get secret -n "$LITELLM_NAMESPACE" "$LITELLM_MASTER_SECRET" >/dev/null 2>&1; then
+    step "LiteLLM master Secret exists: ${LITELLM_MASTER_SECRET}"
+  else
+    if [[ -z "$master_key" ]]; then
+      master_key="sk-$(openssl rand -hex 24)"
+    fi
+    kubectl create secret generic "$LITELLM_MASTER_SECRET" \
+      --namespace "$LITELLM_NAMESPACE" \
+      --from-literal=api-key="$master_key" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+    step "LiteLLM master Secret created: ${LITELLM_MASTER_SECRET}"
+  fi
+}
+
+install_litellm_gateway() {
+  if [[ "$enable_litellm" != "true" ]]; then
+    return 0
+  fi
+
+  header "Installing LiteLLM gateway"
+
+  if $dry_run; then
+    warn "[dry-run] create LiteLLM OpenRouter and master Secrets in namespace ${LITELLM_NAMESPACE}"
+    warn "[dry-run] helm upgrade --install ${LITELLM_RELEASE_NAME} oci://ghcr.io/berriai/litellm-helm -n ${LITELLM_NAMESPACE} --values ..."
+    return 0
+  fi
+
+  mkdir -p "$REPO_DIR/.bootstrap"
+  kubectl create namespace "$LITELLM_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  ensure_litellm_secrets
+
+  local master_key values_file
+  master_key="$(kubectl get secret -n "$LITELLM_NAMESPACE" "$LITELLM_MASTER_SECRET" -o jsonpath='{.data.api-key}' | base64 -d)"
+  values_file="$REPO_DIR/.bootstrap/litellm-values.yaml"
+
+  cat > "$values_file" <<YAML
+image:
+  repository: ghcr.io/berriai/litellm
+  tag: "${LITELLM_IMAGE_TAG}"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 4000
+
+ingress:
+  enabled: false
+
+db:
+  deployStandalone: false
+  useExisting: false
+
+redis:
+  enabled: false
+
+migrationJob:
+  enabled: false
+
+# Conservative resources for a 2 vCPU / 4 GB node.
+# Requests move the pod to Burstable QoS, while limits cap burst so LiteLLM
+# does not starve K3s system or shclop workloads.
+resources:
+  requests:
+    cpu: 150m
+    memory: 256Mi
+  limits:
+    cpu: 750m
+    memory: 1Gi
+
+# More forgiving probes so cold starts and transient resource pressure do not
+# trigger unnecessary restarts.
+livenessProbe:
+  path: /health/liveliness
+  initialDelaySeconds: 10
+  periodSeconds: 20
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 6
+
+readinessProbe:
+  path: /health/readiness
+  initialDelaySeconds: 5
+  periodSeconds: 15
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 10
+
+startupProbe:
+  path: /health/readiness
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 60
+
+masterkey: "${master_key}"
+
+environmentSecrets:
+  - ${LITELLM_OPENROUTER_SECRET}
+
+proxy_config:
+  model_list:
+    - model_name: ${LITELLM_MODEL_ALIAS}
+      litellm_params:
+        model: openrouter/${LITELLM_OPENROUTER_MODEL}
+        api_key: os.environ/OPENROUTER_API_KEY
+  general_settings:
+    master_key: os.environ/PROXY_MASTER_KEY
+YAML
+
+  helm upgrade --install "$LITELLM_RELEASE_NAME" oci://ghcr.io/berriai/litellm-helm \
+    --namespace "$LITELLM_NAMESPACE" --create-namespace \
+    --values "$values_file" \
+    --wait
+
+  step "LiteLLM gateway installed: $(litellm_service_url)"
+}
+
+# ═══════════════════════════════════════════════════════════════
 #  LOCAL IMAGE BUILD (Docker BuildKit)
 # ═══════════════════════════════════════════════════════════════
 install_docker_buildkit() {
@@ -855,8 +1011,20 @@ deploy_shclop() {
     generate_default_values "$values_file"
   fi
 
+  local helm_args=("$HELM_RELEASE_NAME" "$CHARTS_DIR/shclop" --namespace "$SHCLOP_NAMESPACE" -f "$values_file")
+  if [[ "$enable_litellm" == "true" ]]; then
+    helm_args+=(
+      --set "llmGateway.litellm.enabled=true"
+      --set "llmGateway.litellm.serviceName=${LITELLM_RELEASE_NAME}"
+      --set "llmGateway.litellm.namespace=${LITELLM_NAMESPACE}"
+      --set "llmGateway.baseURL=$(litellm_service_url)"
+      --set "llmGateway.existingSecret.name=${LITELLM_MASTER_SECRET}"
+      --set "llmGateway.existingSecret.key=api-key"
+    )
+  fi
+
   if $dry_run; then
-    warn "[dry-run] helm install $HELM_RELEASE_NAME $CHARTS_DIR/shclop -f $values_file"
+    warn "[dry-run] helm upgrade --install ${helm_args[*]} --create-namespace --wait"
     return 0
   fi
 
@@ -868,22 +1036,9 @@ deploy_shclop() {
   fi
 
   # Install or upgrade
-  if helm list -n "$SHCLOP_NAMESPACE" -q 2>/dev/null | grep -q "^${HELM_RELEASE_NAME}$"; then
-    info "Release '$HELM_RELEASE_NAME' already exists, upgrading..."
-    helm upgrade "$HELM_RELEASE_NAME" "$CHARTS_DIR/shclop" \
-      --namespace "$SHCLOP_NAMESPACE" \
-      -f "$values_file" \
-      --wait
-    step "shclop upgraded"
-  else
-    info "Installing shclop..."
-    helm install "$HELM_RELEASE_NAME" "$CHARTS_DIR/shclop" \
-      --namespace "$SHCLOP_NAMESPACE" \
-      --create-namespace \
-      -f "$values_file" \
-      --wait
-    step "shclop installed"
-  fi
+  info "Installing or upgrading shclop..."
+  helm upgrade --install "${helm_args[@]}" --create-namespace --wait
+  step "shclop deployed"
 
   # Show status
   echo ""
@@ -952,6 +1107,21 @@ sandbox:
 agentRuntime:
   runtimeClassName: kata
 VALUESYAML
+
+  if [[ "$enable_litellm" == "true" ]]; then
+    cat >> "$out" <<VALUESYAML
+
+llmGateway:
+  litellm:
+    enabled: true
+    serviceName: ${LITELLM_RELEASE_NAME}
+    namespace: ${LITELLM_NAMESPACE}
+    port: 4000
+  existingSecret:
+    name: ${LITELLM_MASTER_SECRET}
+    key: api-key
+VALUESYAML
+  fi
 
   # Add image repo when provided
   if [[ -n "$IMAGE_REPO" ]]; then
@@ -1056,10 +1226,13 @@ action_install() {
     build_local_images
   fi
 
-  # 5. Deploy shclop
+  # 5. Internal LLM gateway (optional)
+  install_litellm_gateway
+
+  # 6. Deploy shclop
   deploy_shclop
 
-  # 6. Observability stack (optional)
+  # 7. Observability stack (optional)
   install_observability_stack
 
   if ! $dry_run; then
@@ -1236,6 +1409,7 @@ if [[ -n "$remote" ]]; then
   $enable_ingress && remote_argv+=("--enable-ingress")
   $enable_observability && remote_argv+=("--enable-observability")
   $build_local_images && remote_argv+=("--build-local-images")
+  $enable_litellm && remote_argv+=("--enable-litellm")
   [[ -n "$values" ]] && remote_argv+=("--values" "$values")
   [[ -n "$IMAGE_REPO" ]] && remote_argv+=("--image-repo" "$IMAGE_REPO")
   [[ -n "$IMAGE_TAG" ]] && remote_argv+=("--image-tag" "$IMAGE_TAG")
@@ -1246,6 +1420,9 @@ if [[ -n "$remote" ]]; then
   [[ -n "$TLS_CLUSTER_ISSUER" ]] && remote_argv+=("--cluster-issuer" "$TLS_CLUSTER_ISSUER")
   [[ -n "$observability_namespace" && "$observability_namespace" != "$OBSERVABILITY_NAMESPACE" ]] && remote_argv+=("--observability-namespace" "$observability_namespace")
   [[ -n "$grafana_host" ]] && remote_argv+=("--grafana-host" "$grafana_host")
+  [[ -n "$LITELLM_NAMESPACE" && "$LITELLM_NAMESPACE" != "$SHCLOP_NAMESPACE" ]] && remote_argv+=("--litellm-namespace" "$LITELLM_NAMESPACE")
+  [[ -n "$LITELLM_RELEASE_NAME" && "$LITELLM_RELEASE_NAME" != "litellm" ]] && remote_argv+=("--litellm-release" "$LITELLM_RELEASE_NAME")
+  [[ -n "$LITELLM_OPENROUTER_MODEL" && "$LITELLM_OPENROUTER_MODEL" != "deepseek/deepseek-v4-flash:free" ]] && remote_argv+=("--litellm-model" "$LITELLM_OPENROUTER_MODEL")
 
   info "Running on $remote..."
   ssh "$remote" "bash -s -- $(printf '%q ' "${remote_argv[@]}")" < "$0"

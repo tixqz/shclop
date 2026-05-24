@@ -113,6 +113,15 @@ agentRuntime:
 llmGateway:
   # -- Base URL for the LLM gateway
   baseURL: ""
+  litellm:
+    # -- Use an internal LiteLLM ClusterIP service installed by bootstrap
+    enabled: false
+    # -- Kubernetes Service name for the LiteLLM proxy
+    serviceName: litellm
+    # -- Kubernetes namespace for the LiteLLM proxy (empty = this release namespace)
+    namespace: ""
+    # -- HTTP port exposed by the LiteLLM Service
+    port: 4000
   # -- Reference an existing Kubernetes Secret containing the LLM gateway API key
   existingSecret:
     name: ""

@@ -22,9 +22,9 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 | `internal/config/` | Runtime configuration defaults and environment bindings for store backend, Kubernetes runtime (including `SHCLOP_POD_READY_TIMEOUT`), network policy, metrics, bootstrap admin, LLM gateway Secret metadata, and Grafana URL. |
 | `internal/domain/` | Minimal API/domain DTOs: `User`, `Agent`, `LLMModel`, `LLMGatewaySettings`, `AdminOverview`, and `Message`. |
 | `internal/store/` | Persistence abstraction plus in-memory test/dev store and PostgreSQL implementation. Owns user password hashes, agent state, enabled model allowlist, gateway settings, and bootstrap admin reconciliation. |
-| `internal/sandbox/` | Runtime provider abstractions and Kubernetes pod/PVC/Secret/NetworkPolicy builders. Builds hardened Kata pod specs with `dnsPolicy: Default` (bypassing CoreDNS for Kata VM networking compatibility), injects `LLM_GATEWAY_BASE_URL`, `LLM_GATEWAY_MODEL`, and `LLM_GATEWAY_API_KEY` from a Kubernetes Secret key reference, and waits for pod readiness (Running + all containers Ready) before returning from Start. On timeout or Failed phase, collects warning Events and container waiting reasons for the error message. |
+| `internal/sandbox/` | Runtime provider abstractions and Kubernetes pod/PVC/Secret/NetworkPolicy builders. Builds hardened Kata pod specs with Kubernetes default DNS policy, injects `LLM_GATEWAY_BASE_URL`, `LLM_GATEWAY_MODEL`, and optional gateway authentication from a Kubernetes Secret key reference, and waits for pod readiness (Running + all containers Ready) before returning from Start. On timeout or Failed phase, collects warning Events and container waiting reasons for the error message. |
 | `internal/gateway/` | In-memory runtime connection registry. Tracks runtime WebSocket connections per agent and routes `task.run` envelopes from browser chat to connected runtimes. |
-| `internal/claw/` | Adapter abstraction for executing Claw tasks from runtime processes, including subprocess, demo, and OpenAI-compatible LLM adapter. The OpenAI adapter reads `LLM_GATEWAY_BASE_URL`, `LLM_GATEWAY_MODEL`, and `LLM_GATEWAY_API_KEY` environment variables and makes streaming HTTP requests to external LLM providers. |
+| `internal/claw/` | Adapter abstraction for executing Claw tasks from runtime processes, including subprocess, demo, and OpenAI-compatible LLM adapter. The OpenAI adapter reads `LLM_GATEWAY_BASE_URL`, `LLM_GATEWAY_MODEL`, and optional `LLM_GATEWAY_API_KEY` environment variables and makes streaming HTTP requests to the configured gateway, normally the internal LiteLLM ClusterIP service installed by bootstrap. |
 | `internal/logging/` | `slog` JSON logger construction with configurable log level. |
 | `internal/identity/` | Legacy identity interfaces/mock YAML provider retained for compatibility but not wired into the production API path. |
 | `internal/security/` | Legacy security policy/audit helpers retained but not exposed by production routes. |
@@ -38,7 +38,7 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 | `User` | `id`, `username`, `role` (`admin` or `user`), `disabled`, timestamps. Admin users manage users/models/gateway settings; normal users own agents. |
 | `Agent` | `id`, `owner_user_id`, `name`, `runtime` (`openclaw` or `nanoclaw`), `model`, `state`, `last_error`, timestamps. Agents are user-owned runtime definitions and state records. |
 | `LLMModel` | `id`, display name, provider model identifier, enabled flag, timestamps. Backend validates non-empty agent models against enabled provider identifiers before create/start. |
-| `LLMGatewaySettings` | Enabled flag, external base URL, Kubernetes Secret name/key metadata, updated timestamp. Raw API keys are not stored in the backend DB. |
+| `LLMGatewaySettings` | Enabled flag, base URL, optional Kubernetes Secret name/key metadata, updated timestamp. Raw provider API keys are not stored in the backend DB; with bootstrap-managed LiteLLM, OpenRouter credentials stay in the LiteLLM Secret. |
 
 ## HTTP and WebSocket surface
 
@@ -69,11 +69,11 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 ## Runtime launch and chat flow
 
 1. User creates an agent with runtime `openclaw` or `nanoclaw` and an optional enabled provider model.
-2. `start` validates model allowlist and LLM gateway readiness when a model is set.
+2. `start` validates model allowlist and LLM gateway readiness (enabled + base URL) when a model is set.
 3. Backend creates an internal runtime token, stores it in memory by agent ID, logs the start request with agent_id, user_id, runtime, and model, builds a sandbox launch request, and calls the configured `RuntimeProvider`.
 4. Kubernetes provider creates/updates Secret, PVC, optional NetworkPolicy, and a hardened runtime Pod with Kata `RuntimeClassName`, no host namespaces, no service account token, non-root user, read-only root filesystem, seccomp `RuntimeDefault`, and dropped Linux capabilities.
 5. Provider then polls the Pod phase and container statuses until the pod is `Running` with all containers `Ready`, the pod enters `Failed` phase, or a configurable timeout (`PodReadyTimeout`, default 120s) expires. On timeout, warning Events for the pod and container waiting reasons are collected into the error message. On success, the agent state transitions to `running`.
-6. Runtime process reads its token, connects to `/runtime/ws`, registers, receives `task.run`, invokes the Claw adapter (`OpenAIAdapter` when `LLM_GATEWAY_BASE_URL` and `LLM_GATEWAY_API_KEY` are set, `DemoAdapter` otherwise), and streams task events back.
+6. Runtime process reads its token, connects to `/runtime/ws`, registers, receives `task.run`, invokes the Claw adapter (`OpenAIAdapter` when `LLM_GATEWAY_BASE_URL` is set, `DemoAdapter` otherwise), and streams task events back. In production, `LLM_GATEWAY_BASE_URL` points to the internal LiteLLM service; the runtime does not call OpenRouter directly.
 7. Browser chat on `/ws` forwards user text to `RuntimeRegistry` and relays runtime payloads to the SPA.
 
 ## Observability
@@ -89,6 +89,7 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 - `agentRuntime.runtimeClassName` defaults to `kata` and fails Helm rendering if empty.
 - Backend Deployment fails Helm rendering unless PostgreSQL is bundled or an external DSN Secret is configured, and unless `sandbox.provider=kubernetes`.
 - Backend Deployment uses a PostgreSQL initContainer to apply the minimal schema before the API process starts, then passes `--store=postgres`, `--sandbox-provider=kubernetes`, runtime image flags/env, network policy mode, bootstrap admin env, LLM gateway flags, probes for `/healthz` and `/readyz`, and optional Grafana URL.
+- `scripts/bootstrap.sh --enable-litellm` installs the official LiteLLM Helm chart from `oci://ghcr.io/berriai/litellm-helm` as a ClusterIP-only service on standard containerd/runc (no `RuntimeClass`). It configures OpenRouter credentials in a LiteLLM Secret, exposes only the configured model alias through LiteLLM, and wires shclop to `http://<litellm-service>.<namespace>.svc.cluster.local:4000/v1`.
 - The chart creates a backend ServiceAccount plus Role/RoleBinding in the sandbox namespace so the backend can manage runtime Pods, Secrets, PVCs, and NetworkPolicies.
 - Mock, Docker demo, in-memory, identity federation, Vault, MinIO, workspace, skills, LDAP/OIDC, MCP, and security-policy features are not part of the charted production path.
 

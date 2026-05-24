@@ -587,6 +587,40 @@ func TestStartAgentWithModelRequiresFullyConfiguredGateway(t *testing.T) {
 	}
 }
 
+func TestStartAgentWithModelAcceptsInternalGatewayWithoutSecret(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	doJSON(t, server, http.MethodPost, "/api/admin/models", map[string]any{
+		"display_name":   "DeepSeek V4 Flash",
+		"provider_model": "deepseek-v4-flash",
+		"enabled":        true,
+	}, token)
+
+	updated := doJSON(t, server, http.MethodPatch, "/api/admin/llm-gateway", map[string]any{
+		"enabled":  true,
+		"base_url": "http://shclop-litellm:4000/v1",
+	}, token)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("configure internal gateway: %d: %s", updated.Code, updated.Body.String())
+	}
+
+	created := doJSON(t, server, http.MethodPost, "/api/agents", map[string]any{
+		"name":    "ModelAgent",
+		"runtime": "nanoclaw",
+		"model":   "deepseek-v4-flash",
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create agent: %d: %s", created.Code, created.Body.String())
+	}
+	agentID := assertJSONField(t, created.Body.Bytes(), "id", "")
+
+	started := doJSON(t, server, http.MethodPost, "/api/agents/"+agentID+"/start", nil, token)
+	if started.Code != http.StatusAccepted {
+		t.Fatalf("start agent: %d: %s", started.Code, started.Body.String())
+	}
+}
+
 func TestStopAgentRevokesRuntimeToken(t *testing.T) {
 	server := newTestServer()
 	token := loginAsAdmin(t, server)

@@ -12,6 +12,13 @@
 
 {{- $fullname := include "shclop.fullname" . -}}
 {{- $runtimeGatewayURL := .Values.sandbox.kubernetes.gatewayURL | default (printf "ws://%s-backend:8080/runtime/ws" $fullname) -}}
+{{- $litellmNamespace := .Values.llmGateway.litellm.namespace | default .Release.Namespace -}}
+{{- $litellmHost := printf "%s.%s.svc.cluster.local" .Values.llmGateway.litellm.serviceName $litellmNamespace -}}
+{{- $litellmBaseURL := printf "http://%s:%v/v1" $litellmHost .Values.llmGateway.litellm.port -}}
+{{- $llmGatewayBaseURL := .Values.llmGateway.baseURL -}}
+{{- if and .Values.llmGateway.litellm.enabled (not $llmGatewayBaseURL) -}}
+{{- $llmGatewayBaseURL = $litellmBaseURL -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -81,7 +88,7 @@ spec:
             - '--network-policy-mode={{ ternary "restricted" "disabled" .Values.sandbox.kubernetes.networkPolicy.enabled }}'
             - "--network-policy-allowed-cidrs={{ .Values.sandbox.kubernetes.networkPolicy.allowedCIDRs }}"
             - "--agent-runtime-class={{ .Values.agentRuntime.runtimeClassName }}"
-            - "--llm-gateway-base-url={{ .Values.llmGateway.baseURL }}"
+            - "--llm-gateway-base-url={{ $llmGatewayBaseURL }}"
             - "--llm-gateway-secret-name={{ .Values.llmGateway.existingSecret.name }}"
             - "--llm-gateway-secret-key={{ .Values.llmGateway.existingSecret.key }}"
             - "--bootstrap-admin-username={{ .Values.bootstrapAdmin.username }}"

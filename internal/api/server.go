@@ -652,9 +652,9 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 		s.writeStoreError(w, err)
 		return
 	}
-	if agent.Model != "" && (!settings.Enabled || settings.BaseURL == "" || settings.SecretName == "" || settings.SecretKey == "") {
+	if agent.Model != "" && (!settings.Enabled || settings.BaseURL == "") {
 		s.metrics.gatewayErrors.Inc()
-		http.Error(w, "LLM gateway not fully configured: enabled, base URL, secret name, and secret key are required when an agent model is set", http.StatusBadRequest)
+		http.Error(w, "LLM gateway not fully configured: enabled and base URL are required when an agent model is set", http.StatusBadRequest)
 		return
 	}
 

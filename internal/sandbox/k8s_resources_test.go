@@ -42,8 +42,8 @@ func TestBuildRuntimePodHardeningAndVolumes(t *testing.T) {
 	if pod.Spec.RuntimeClassName == nil || *pod.Spec.RuntimeClassName != "kata" {
 		t.Fatalf("unexpected runtime class: %#v", pod.Spec.RuntimeClassName)
 	}
-	if pod.Spec.DNSPolicy != "Default" {
-		t.Fatalf("expected DNSDefault policy for runtime pods, got %q", pod.Spec.DNSPolicy)
+	if pod.Spec.DNSPolicy != "" {
+		t.Fatalf("expected Kubernetes default DNS policy for runtime pods, got %q", pod.Spec.DNSPolicy)
 	}
 	if pod.Spec.Containers[0].Env[0].Name != "A" || pod.Spec.Containers[0].Env[1].Name != "B" {
 		t.Fatalf("env not sorted: %#v", pod.Spec.Containers[0].Env)

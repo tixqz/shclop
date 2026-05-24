@@ -15,9 +15,9 @@ import (
 
 // OpenAIAdapter implements Adapter for OpenAI-compatible chat completion APIs.
 // It reads configuration from environment variables:
-//   - LLM_GATEWAY_BASE_URL  — base URL for the API (e.g. https://openrouter.ai/api/v1)
-//   - LLM_GATEWAY_MODEL     — model name (e.g. deepseek/deepseek-v4-flash:free)
-//   - LLM_GATEWAY_API_KEY   — API key for authentication
+//   - LLM_GATEWAY_BASE_URL  — base URL for the API (for example, http://litellm:4000/v1)
+//   - LLM_GATEWAY_MODEL     — model name exposed by the gateway
+//   - LLM_GATEWAY_API_KEY   — optional gateway authentication token
 type OpenAIAdapter struct{}
 
 func (a OpenAIAdapter) Run(ctx context.Context, task Task) (<-chan Event, error) {
@@ -31,9 +31,6 @@ func (a OpenAIAdapter) Run(ctx context.Context, task Task) (<-chan Event, error)
 	}
 	if model == "" {
 		missing = append(missing, "LLM_GATEWAY_MODEL")
-	}
-	if apiKey == "" {
-		missing = append(missing, "LLM_GATEWAY_API_KEY")
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("OpenAIAdapter: required env vars not set: %s", strings.Join(missing, ", "))
@@ -64,7 +61,9 @@ func (a OpenAIAdapter) Run(ctx context.Context, task Task) (<-chan Event, error)
 			return
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		if apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 
 		client := &http.Client{Timeout: 120 * time.Second}
 		resp, err := client.Do(httpReq)

@@ -24,6 +24,9 @@ func TestOpenAIAdapterReturnsErrorWithoutEnv(t *testing.T) {
 	if !strings.Contains(err.Error(), "LLM_GATEWAY_BASE_URL") {
 		t.Fatalf("expected error about missing base URL, got: %v", err)
 	}
+	if strings.Contains(err.Error(), "LLM_GATEWAY_API_KEY") {
+		t.Fatalf("gateway API key must be optional for internal LiteLLM deployments, got: %v", err)
+	}
 }
 
 func TestOpenAIAdapterStreamsSSEResponse(t *testing.T) {
