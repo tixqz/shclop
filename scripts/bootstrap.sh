@@ -659,7 +659,7 @@ YAML
   additionalDataSources:
     - name: VictoriaLogs
       type: victorialogs
-      url: http://victoria-logs:9428
+      url: http://victoria-logs-victoria-logs-single-server:9428
       access: proxy
       isDefault: false
 
@@ -693,7 +693,7 @@ install_victoria_logs() {
   header "Installing VictoriaLogs"
 
   if $dry_run; then
-    warn "[dry-run] helm upgrade --install victoria-logs vm/victoria-logs -n $ns"
+    warn "[dry-run] helm upgrade --install victoria-logs vm/victoria-logs-single -n $ns"
     return 0
   fi
 
@@ -703,7 +703,7 @@ install_victoria_logs() {
   local ver_flag=()
   [[ -n "$VICTORIA_LOGS_VERSION" ]] && ver_flag=(--version "$VICTORIA_LOGS_VERSION")
 
-  helm upgrade --install victoria-logs vm/victoria-logs \
+  helm upgrade --install victoria-logs vm/victoria-logs-single \
     --namespace "$ns" --create-namespace \
     "${ver_flag[@]}" \
     --wait
