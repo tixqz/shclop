@@ -24,7 +24,7 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 | `internal/store/` | Persistence abstraction plus in-memory test/dev store and PostgreSQL implementation. Owns user password hashes, agent state, enabled model allowlist, gateway settings, and bootstrap admin reconciliation. |
 | `internal/sandbox/` | Runtime provider abstractions and Kubernetes pod/PVC/Secret/NetworkPolicy builders. Builds hardened Kata pod specs, injects `LLM_GATEWAY_BASE_URL`, `LLM_GATEWAY_MODEL`, and `LLM_GATEWAY_API_KEY` from a Kubernetes Secret key reference, and waits for pod readiness (Running + all containers Ready) before returning from Start. On timeout or Failed phase, collects warning Events and container waiting reasons for the error message. |
 | `internal/gateway/` | In-memory runtime connection registry. Tracks runtime WebSocket connections per agent and routes `task.run` envelopes from browser chat to connected runtimes. |
-| `internal/claw/` | Adapter abstraction for executing Claw tasks from runtime processes, including subprocess/demo adapters. |
+| `internal/claw/` | Adapter abstraction for executing Claw tasks from runtime processes, including subprocess, demo, and OpenAI-compatible LLM adapter. The OpenAI adapter reads `LLM_GATEWAY_BASE_URL`, `LLM_GATEWAY_MODEL`, and `LLM_GATEWAY_API_KEY` environment variables and makes streaming HTTP requests to external LLM providers. |
 | `internal/logging/` | `slog` JSON logger construction with configurable log level. |
 | `internal/identity/` | Legacy identity interfaces/mock YAML provider retained for compatibility but not wired into the production API path. |
 | `internal/security/` | Legacy security policy/audit helpers retained but not exposed by production routes. |
@@ -73,7 +73,7 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 3. Backend creates an internal runtime token, stores it in memory by agent ID, logs the start request with agent_id, user_id, runtime, and model, builds a sandbox launch request, and calls the configured `RuntimeProvider`.
 4. Kubernetes provider creates/updates Secret, PVC, optional NetworkPolicy, and a hardened runtime Pod with Kata `RuntimeClassName`, no host namespaces, no service account token, non-root user, read-only root filesystem, seccomp `RuntimeDefault`, and dropped Linux capabilities.
 5. Provider then polls the Pod phase and container statuses until the pod is `Running` with all containers `Ready`, the pod enters `Failed` phase, or a configurable timeout (`PodReadyTimeout`, default 120s) expires. On timeout, warning Events for the pod and container waiting reasons are collected into the error message. On success, the agent state transitions to `running`.
-6. Runtime process reads its token, connects to `/runtime/ws`, registers, receives `task.run`, invokes the Claw adapter, and streams task events back.
+6. Runtime process reads its token, connects to `/runtime/ws`, registers, receives `task.run`, invokes the Claw adapter (`OpenAIAdapter` when `LLM_GATEWAY_BASE_URL` and `LLM_GATEWAY_API_KEY` are set, `DemoAdapter` otherwise), and streams task events back.
 7. Browser chat on `/ws` forwards user text to `RuntimeRegistry` and relays runtime payloads to the SPA.
 
 ## Observability
