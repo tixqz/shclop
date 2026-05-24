@@ -98,6 +98,12 @@ func main() {
 }
 
 func adapterForRuntime(runtimeName string) claw.Adapter {
+	// If LLM gateway is configured, use the real OpenAI-compatible adapter.
+	if strings.TrimSpace(os.Getenv("LLM_GATEWAY_BASE_URL")) != "" &&
+		strings.TrimSpace(os.Getenv("LLM_GATEWAY_API_KEY")) != "" {
+		return claw.OpenAIAdapter{}
+	}
+	// Otherwise fall back to the demo adapter that echoes the input.
 	return claw.DemoAdapter{Flavor: runtimeName}
 }
 
