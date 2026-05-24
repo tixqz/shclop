@@ -421,7 +421,7 @@ configure_containerd_kata() {
 KATAEOF
   else
     cat > "$tmpl" << 'KATAEOF'
-{{ template "containerd" . }}
+{{ template "base" . }}
 
 # Kata Containers runtime
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]
