@@ -19,7 +19,7 @@ header(){ echo -e "\n${BOLD}── $* ──${NC}"; }
 # ── Defaults ──────────────────────────────────────────────────
 K3S_VERSION="${K3S_VERSION:-latest}"
 KATA_VERSION="${KATA_VERSION:-stable-3.x}"
-KATA_STATIC_VERSION="${KATA_STATIC_VERSION:-3.2.0}"
+KATA_STATIC_VERSION="${KATA_STATIC_VERSION:-3.31.0}"
 HELM_RELEASE_NAME="${HELM_RELEASE_NAME:-shclop}"
 SHCLOP_NAMESPACE="${SHCLOP_NAMESPACE:-default}"
 IMAGE_REPO="${IMAGE_REPO:-}"
@@ -346,12 +346,12 @@ install_kata_ubuntu() {
 
   info "Installing prerequisites..."
   apt-get update -qq
-  apt-get install -y -qq curl ca-certificates xz-utils
+  apt-get install -y -qq curl ca-certificates zstd
 
   local arch
   arch="$(uname -m)"
   case "$arch" in
-    x86_64|amd64) kata_arch="x86_64" ;;
+    x86_64|amd64) kata_arch="amd64" ;;
     aarch64|arm64) kata_arch="arm64" ;;
     *) fail "unsupported architecture: $arch (only x86_64/amd64 and aarch64/arm64 are supported)" ;;
   esac
@@ -359,14 +359,14 @@ install_kata_ubuntu() {
   local bootstrap_dir="$REPO_DIR/.bootstrap"
   mkdir -p "$bootstrap_dir"
 
-  local tarball="kata-static-${KATA_STATIC_VERSION}-${kata_arch}.tar.xz"
+  local tarball="kata-static-${KATA_STATIC_VERSION}-${kata_arch}.tar.zst"
   local url="https://github.com/kata-containers/kata-containers/releases/download/${KATA_STATIC_VERSION}/${tarball}"
 
   info "Downloading ${tarball}..."
   curl -fsSL "$url" -o "$bootstrap_dir/$tarball" || fail "failed to download kata-static tarball from $url"
 
   info "Extracting to / ..."
-  tar -xJf "$bootstrap_dir/$tarball" -C / || {
+  tar --use-compress-program=unzstd -xf "$bootstrap_dir/$tarball" -C / || {
     rm -f "$bootstrap_dir/$tarball"
     fail "failed to extract kata-static tarball"
   }
