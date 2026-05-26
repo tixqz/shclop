@@ -215,6 +215,12 @@ export async function adminPatchUser(
   });
 }
 
+// ── Public: Models (enabled only) ──
+
+export async function listModels(): Promise<LLMModel[]> {
+  return apiFetch<LLMModel[]>('/api/models');
+}
+
 // ── Admin: Models ──
 
 export async function adminListModels(): Promise<LLMModel[]> {

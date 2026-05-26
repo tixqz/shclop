@@ -111,6 +111,13 @@ spec:
                   name: {{ if .Values.postgresql.existingSecret.name }}{{ .Values.postgresql.existingSecret.name }}{{ else }}{{ $fullname }}-postgres{{ end }}
                   key: {{ if .Values.postgresql.existingSecret.name }}{{ .Values.postgresql.existingSecret.key }}{{ else }}dsn{{ end }}
             {{- end }}
+            {{- if .Values.llmGateway.existingSecret.name }}
+            - name: SHCLOP_LLM_GATEWAY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.llmGateway.existingSecret.name }}
+                  key: {{ .Values.llmGateway.existingSecret.key }}
+            {{- end }}
             - name: SHCLOP_RUNTIME_IMAGE_OPENCLAW
               value: {{ .Values.agentRuntime.images.openclaw | quote }}
             - name: SHCLOP_RUNTIME_IMAGE_NANOCLAW

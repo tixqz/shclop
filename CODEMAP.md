@@ -11,15 +11,15 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 | `cmd/shclop/main.go` | API server binary. Loads `config.Default()`, binds CLI flags, configures JSON logging, constructs `api.Server`, and starts HTTP service. Production Helm passes PostgreSQL, Kubernetes sandbox, Kata RuntimeClass, bootstrap admin, LLM gateway, and Grafana flags here. |
 | `cmd/shclop-runtime/main.go` | Runtime sidecar/process binary. Reads runtime token and agent/gateway env, connects to `/runtime/ws`, registers with the backend, runs the Claw adapter for incoming tasks, and emits structured JSON logs. |
 | `migrations/0001_platform.sql` | Minimal production schema: `users`, `agents`, `llm_models`, and single-row `llm_gateway_settings`. Workspaces, skills, audit runs, approvals, and revision tables are intentionally absent. |
-| `charts/shclop/` | Production Helm chart. Renders backend Deployment/Service, optional bundled PostgreSQL, bootstrap admin Secret, migration ConfigMap/initContainer, sandbox Namespace/RBAC, ServiceMonitor, and values for VictoriaMetrics/VictoriaLogs/Grafana guidance. |
+| `charts/shclop/` | Production Helm chart. Renders backend Deployment/Service, optional bundled PostgreSQL, bootstrap admin Secret, migration ConfigMap/initContainer, sandbox Namespace/RBAC, ServiceMonitor, and values for Prometheus/Loki/Fluent Bit/Grafana guidance. |
 
 ## Directory map
 
 | Directory | Responsibility summary |
 | --- | --- |
-| `internal/api/` | HTTP API, auth middleware, admin/user/model/gateway handlers, activity log, health/readiness/metrics endpoints, browser chat WebSocket, runtime registration WebSocket, static frontend serving. |
+| `internal/api/` | HTTP API, auth middleware, read-only user model listing, admin/user/model/gateway handlers, activity log, health/readiness/metrics endpoints, browser chat WebSocket, runtime registration WebSocket, static frontend serving. |
 | `internal/auth/` | Local username/password auth using bcrypt hashes from the store and random bearer session tokens. Disabled-user enforcement is rechecked by API middleware against current store state. |
-| `internal/config/` | Runtime configuration defaults and environment bindings for store backend, Kubernetes runtime (including `SHCLOP_POD_READY_TIMEOUT`), network policy, metrics, bootstrap admin, LLM gateway Secret metadata, and Grafana URL. |
+| `internal/config/` | Runtime configuration defaults and environment bindings for store backend, Kubernetes runtime (including `SHCLOP_POD_READY_TIMEOUT`), network policy, metrics, bootstrap admin, LLM gateway URL/Secret metadata/API key, and Grafana URL. |
 | `internal/domain/` | Minimal API/domain DTOs: `User`, `Agent`, `LLMModel`, `LLMGatewaySettings`, `AdminOverview`, and `Message`. |
 | `internal/store/` | Persistence abstraction plus in-memory test/dev store and PostgreSQL implementation. Owns user password hashes, agent state, enabled model allowlist, gateway settings, and bootstrap admin reconciliation. |
 | `internal/sandbox/` | Runtime provider abstractions and Kubernetes pod/PVC/Secret/NetworkPolicy builders. Builds hardened Kata pod specs with Kubernetes default DNS policy, injects `LLM_GATEWAY_BASE_URL`, `LLM_GATEWAY_MODEL`, and optional gateway authentication from a Kubernetes Secret key reference, and waits for pod readiness (Running + all containers Ready) before returning from Start. On timeout or Failed phase, collects warning Events and container waiting reasons for the error message. |
@@ -37,8 +37,8 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 | --- | --- |
 | `User` | `id`, `username`, `role` (`admin` or `user`), `disabled`, timestamps. Admin users manage users/models/gateway settings; normal users own agents. |
 | `Agent` | `id`, `owner_user_id`, `name`, `runtime` (`openclaw` or `nanoclaw`), `model`, `state`, `last_error`, timestamps. Agents are user-owned runtime definitions and state records. |
-| `LLMModel` | `id`, display name, provider model identifier, enabled flag, timestamps. Backend validates non-empty agent models against enabled provider identifiers before create/start. |
-| `LLMGatewaySettings` | Enabled flag, base URL, optional Kubernetes Secret name/key metadata, updated timestamp. Raw provider API keys are not stored in the backend DB; with bootstrap-managed LiteLLM, OpenRouter credentials stay in the LiteLLM Secret. |
+| `LLMModel` | `id`, display name, provider model identifier, enabled flag, timestamps. Backend exposes enabled models to authenticated users through `GET /api/models`; when LiteLLM discovery is configured, the public list is intersected with `/v1/models` aliases returned by the gateway. Agent create/start validates non-empty agent models against enabled provider identifiers. |
+| `LLMGatewaySettings` | Enabled flag, base URL, optional Kubernetes Secret name/key metadata, updated timestamp. Raw provider API keys are not stored in the backend DB; Helm can inject the LiteLLM key into `SHCLOP_LLM_GATEWAY_API_KEY` so the API server can query model discovery, while runtime pods receive the key through Kubernetes Secret refs. |
 
 ## HTTP and WebSocket surface
 
@@ -49,6 +49,7 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 | `GET /metrics` | Prometheus metrics via a custom registry when metrics are enabled; returns 404 when disabled. |
 | `POST /api/auth/login` | Local login. Bootstraps admin on demand, sets `shclop_session` cookie, and returns `{user, token}`. |
 | `GET /api/me` | Returns current store-backed user after bearer/cookie validation. |
+| `GET /api/models` | Authenticated read-only list of enabled LLM models for regular users and admins. With a configured LiteLLM base URL and API key, filters the enabled allowlist to aliases returned by LiteLLM `/v1/models`; without gateway discovery configured, falls back to the enabled store allowlist for development. Used by the SPA agent creation form so non-admin users select only available gateway-backed model identifiers. |
 | `/api/agents`, `/api/agents/{id}`, `/api/agents/{id}/start`, `/api/agents/{id}/stop` | User agent listing, creation, retrieval, start, and stop. Start returns the updated `Agent` directly with HTTP 202 and keeps runtime tokens internal. |
 | `/api/admin/users`, `/api/admin/users/{id}` | Admin-only user creation/listing and role/disabled updates. |
 | `/api/admin/models`, `/api/admin/models/{id}` | Admin-only model allowlist creation/listing/update and enable/disable. |
@@ -81,15 +82,15 @@ Shclop is a self-hosted control plane for OpenClaw/NanoClaw agents. The backend 
 - Backend logs use `slog.JSONHandler(os.Stdout)` with configurable level. Runtime logs also use JSON `slog` and avoid printing API keys.
 - Metrics are exported by `internal/api` using `github.com/prometheus/client_golang`: HTTP request count/duration, active connections, agent starts/stops/failures, runtime pod creation failures, chat/task events, model allowlist failures, and LLM gateway validation errors.
 - Helm annotates the Service for Prometheus scraping by default and can render a `ServiceMonitor` when `monitoring.serviceMonitor.enabled=true`.
-- Chart values document VictoriaMetrics k8s-stack, VictoriaLogs, and Grafana defaults with 7-day metrics/log retention.
+- Chart/bootstrap values document standalone Prometheus, Grafana, Loki, and Fluent Bit defaults with 7-day metrics/log retention. Bootstrap installs Grafana with a persisted admin password, a Prometheus datasource pointed at the standalone server service, Loki datasource, and a basic `Shclop QA Overview` dashboard for backend availability, container resources, and recent logs.
 
 ## Helm production shape
 
 - `postgresql.bundled: true` by default creates a single-node PostgreSQL Secret/PVC/Deployment/Service; external production DBs can be supplied through an existing DSN Secret.
 - `agentRuntime.runtimeClassName` defaults to `kata` and fails Helm rendering if empty.
 - Backend Deployment fails Helm rendering unless PostgreSQL is bundled or an external DSN Secret is configured, and unless `sandbox.provider=kubernetes`.
-- Backend Deployment uses a PostgreSQL initContainer to apply the minimal schema before the API process starts, then passes `--store=postgres`, `--sandbox-provider=kubernetes`, runtime image flags/env, network policy mode, bootstrap admin env, LLM gateway flags, probes for `/healthz` and `/readyz`, and optional Grafana URL.
-- `scripts/bootstrap.sh --enable-litellm` installs the official LiteLLM Helm chart from `oci://ghcr.io/berriai/litellm-helm` as a ClusterIP-only service on standard containerd/runc (no `RuntimeClass`). It configures OpenRouter credentials in a LiteLLM Secret, exposes only the configured model alias through LiteLLM, and wires shclop to `http://<litellm-service>.<namespace>.svc.cluster.local:4000/v1`.
+- Backend Deployment uses a PostgreSQL initContainer to apply the minimal schema before the API process starts, then passes `--store=postgres`, `--sandbox-provider=kubernetes`, runtime image flags/env, network policy mode, bootstrap admin env, LLM gateway flags and optional `SHCLOP_LLM_GATEWAY_API_KEY` from the configured Secret, probes for `/healthz` and `/readyz`, and optional Grafana URL.
+- `scripts/bootstrap.sh --enable-litellm` installs the official LiteLLM Helm chart from `oci://ghcr.io/berriai/litellm-helm` as a ClusterIP-only service on standard containerd/runc (no `RuntimeClass`). It configures OpenRouter credentials in a LiteLLM Secret, exposes only the configured model alias through LiteLLM, and wires shclop to the full Kubernetes DNS name `http://<litellm-service>.<namespace>.svc.cluster.local:4000/v1` so runtime pods do not depend on short-name DNS search behavior.
 - The chart creates a backend ServiceAccount plus Role/RoleBinding in the sandbox namespace so the backend can manage runtime Pods, Secrets, PVCs, and NetworkPolicies.
 - Mock, Docker demo, in-memory, identity federation, Vault, MinIO, workspace, skills, LDAP/OIDC, MCP, and security-policy features are not part of the charted production path.
 
@@ -100,7 +101,9 @@ After the production simplification, the following commands have passed during i
 ```bash
 go test ./...
 go mod tidy && go vet ./... && go build ./...
-npm run build   # from web/
+npm --prefix web run build
+bash -n scripts/bootstrap.sh
+helm lint charts/shclop
 helm template shclop charts/shclop
 helm template shclop charts/shclop --set monitoring.serviceMonitor.enabled=true --set llmGateway.baseURL=https://llm.example.com --set llmGateway.existingSecret.name=llm-secret --set observability.grafana.url=https://grafana.example.com
 helm template shclop charts/shclop --set agentRuntime.runtimeClassName=  # expected failure

@@ -20,6 +20,7 @@ header(){ echo -e "\n${BOLD}── $* ──${NC}"; }
 K3S_VERSION="${K3S_VERSION:-latest}"
 KATA_VERSION="${KATA_VERSION:-stable-3.x}"
 KATA_STATIC_VERSION="${KATA_STATIC_VERSION:-3.31.0}"
+KATA_DEFAULT_MEMORY_MIB="${KATA_DEFAULT_MEMORY_MIB:-768}"
 HELM_RELEASE_NAME="${HELM_RELEASE_NAME:-shclop}"
 SHCLOP_NAMESPACE="${SHCLOP_NAMESPACE:-default}"
 IMAGE_REPO="${IMAGE_REPO:-}"
@@ -31,8 +32,7 @@ MIN_CPU_CORES="${MIN_CPU_CORES:-2}"
 MIN_MEMORY_MIB="${MIN_MEMORY_MIB:-4096}"
 MIN_DISK_GIB="${MIN_DISK_GIB:-30}"
 OBSERVABILITY_NAMESPACE="${OBSERVABILITY_NAMESPACE:-monitoring}"
-VICTORIA_METRICS_STACK_VERSION="${VICTORIA_METRICS_STACK_VERSION:-}"
-VICTORIA_LOGS_VERSION="${VICTORIA_LOGS_VERSION:-}"
+# (removed VictoriaMetrics/VictoriaLogs — replaced by Prometheus + Loki + Fluent Bit)
 LITELLM_RELEASE_NAME="${LITELLM_RELEASE_NAME:-litellm}"
 LITELLM_NAMESPACE="${LITELLM_NAMESPACE:-$SHCLOP_NAMESPACE}"
 LITELLM_IMAGE_TAG="${LITELLM_IMAGE_TAG:-v1.85.0}"
@@ -72,7 +72,7 @@ Flags:
   --purge-data         Also remove PVCs, workspace data (for destroy)
   --remove-k3s         Remove K3s (for destroy)
   --remove-kata        Remove Kata (for destroy)
-  --enable-observability  Install recommended observability stack (VictoriaMetrics k8s-stack, VictoriaLogs, Grafana)
+  --enable-observability  Install recommended observability stack (Prometheus + Grafana + Loki + Fluent Bit)
   --observability-namespace NS  Namespace for observability components (default: monitoring)
   --grafana-host HOST     Explicit Grafana hostname (default: grafana.<public-ip>.nip.io)
 
@@ -190,6 +190,7 @@ is_k3s_installed() { command -v k3s &>/dev/null; }
 is_k3s_running()   { systemctl is-active --quiet k3s 2>/dev/null; }
 k3s_version()      { k3s --version 2>/dev/null | head -1; }
 kubectl()          { k3s kubectl "$@"; }
+helm()             { KUBECONFIG="$K3S_KUBECONFIG" command helm "$@"; }
 
 # ── Kata helpers ──────────────────────────────────────────────
 is_kata_installed()  { command -v kata-runtime &>/dev/null; }
@@ -401,6 +402,50 @@ install_kata_ubuntu() {
   else
     fail "kata-runtime is still missing after static install. The release tarball may be incomplete or architecture mismatch."
   fi
+}
+
+install_helm() {
+  header "Installing Helm"
+  if command -v helm &>/dev/null; then
+    warn "Helm already installed: $(helm version --short 2>/dev/null || true)"
+    return 0
+  fi
+  if $dry_run; then
+    warn "[dry-run] curl -sfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
+    return 0
+  fi
+  info "Installing Helm..."
+  curl -sfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  step "Helm installed: $(helm version --short)"
+}
+
+tune_kata_configuration() {
+  header "Tuning Kata configuration"
+  local config="/opt/kata/share/defaults/kata-containers/configuration.toml"
+  if $dry_run; then
+    warn "[dry-run] set Kata default_memory to ${KATA_DEFAULT_MEMORY_MIB} MiB in ${config}"
+    return 0
+  fi
+  if [[ ! -f "$config" ]]; then
+    warn "Kata configuration not found at ${config}; skipping memory tuning"
+    return 0
+  fi
+
+  python3 - "$config" "$KATA_DEFAULT_MEMORY_MIB" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+memory = sys.argv[2]
+content = path.read_text()
+updated, count = re.subn(r'(?m)^default_memory\s*=\s*\d+', f'default_memory = {memory}', content, count=1)
+if count == 0:
+    raise SystemExit('default_memory was not found in Kata configuration')
+if updated != content:
+    path.write_text(updated)
+PY
+  step "Kata default_memory set to ${KATA_DEFAULT_MEMORY_MIB} MiB"
 }
 
 configure_containerd_kata() {
@@ -627,103 +672,489 @@ CLUSTERISSUER
 }
 
 # ═══════════════════════════════════════════════════════════════
-#  OBSERVABILITY
+#  OBSERVABILITY — Prometheus + Grafana + Loki + Fluent Bit
 # ═══════════════════════════════════════════════════════════════
-install_vm_k8s_stack() {
+# Release names for the stack
+PROMETHEUS_SERVER_RELEASE="${PROMETHEUS_SERVER_RELEASE:-prometheus-server}"
+LOKI_RELEASE="${LOKI_RELEASE:-loki}"
+FLUENT_BIT_RELEASE="${FLUENT_BIT_RELEASE:-fluent-bit}"
+GRAFANA_RELEASE="${GRAFANA_RELEASE:-grafana}"
+# The actual Prometheus server Kubernetes Service name (chart creates <release>-server).
+# Default: prometheus-server-server matches the prometheus-community/prometheus chart
+# with release name prometheus-server (the default PROMETHEUS_SERVER_RELEASE).
+PROMETHEUS_SERVER_SERVICE="${PROMETHEUS_SERVER_SERVICE:-prometheus-server-server}"
+# Grafana admin password (default matches current QA environment)
+GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-CiHuGao7eVT3bpo6}"
+
+cleanup_old_observability() {
+  local ns="$observability_namespace"
+
+  if $dry_run; then
+    warn "[dry-run] would clean up old observability releases (victoria-metrics, victoria-logs, prometheus-stack) if present"
+    return 0
+  fi
+
+  # Only check/remove when helm is available and can connect
+  if ! command -v helm &>/dev/null; then
+    return 0
+  fi
+
+  local removed=false
+
+  # Old VictoriaMetrics stack
+  if helm list -n "$ns" -q 2>/dev/null | grep -q "^victoria-metrics-k8s-stack$"; then
+    warn "Removing previous victoria-metrics-k8s-stack release..."
+    helm uninstall victoria-metrics-k8s-stack -n "$ns" 2>/dev/null || true
+    # Clean up leftover CRDs and resources from the old kube-prometheus-style stack
+    kubectl delete crd -l app.kubernetes.io/instance=victoria-metrics-k8s-stack --ignore-not-found 2>/dev/null || true
+    kubectl delete crd -l app.kubernetes.io/managed-by=victoria-metrics-operator --ignore-not-found 2>/dev/null || true
+    removed=true
+  fi
+
+  # Previous interrupted test runs may leave Victoria resources even after the
+  # Helm release record is gone. Delete only resources carrying the old release
+  # label so unrelated monitoring resources are left intact.
+  kubectl delete all -A -l app.kubernetes.io/instance=victoria-metrics-k8s-stack --ignore-not-found 2>/dev/null || true
+  kubectl delete svc,ingress -A -l app.kubernetes.io/instance=victoria-metrics-k8s-stack --ignore-not-found 2>/dev/null || true
+  kubectl delete all -A -l app.kubernetes.io/instance=prometheus-stack --ignore-not-found 2>/dev/null || true
+  kubectl delete svc,ingress -A -l app.kubernetes.io/instance=prometheus-stack --ignore-not-found 2>/dev/null || true
+  kubectl delete svc -n kube-system prometheus-stack-kube-prom-kubelet --ignore-not-found 2>/dev/null || true
+
+  # Old VictoriaLogs
+  if helm list -n "$ns" -q 2>/dev/null | grep -q "^victoria-logs$"; then
+    warn "Removing previous victoria-logs release..."
+    helm uninstall victoria-logs -n "$ns" 2>/dev/null || true
+    removed=true
+  fi
+
+  # Old kube-prometheus-stack (if previously installed under prometheus-stack name)
+  if helm list -n "$ns" -q 2>/dev/null | grep -q "^prometheus-stack$"; then
+    warn "Removing previous prometheus-stack (kube-prometheus-stack) release..."
+    helm uninstall prometheus-stack -n "$ns" 2>/dev/null || true
+    # Clean up leftover ServiceMonitor CRDs from the operator
+    kubectl delete crd servicemonitors.monitoring.coreos.com --ignore-not-found 2>/dev/null || true
+    kubectl delete crd prometheusrules.monitoring.coreos.com --ignore-not-found 2>/dev/null || true
+    kubectl delete crd podmonitors.monitoring.coreos.com --ignore-not-found 2>/dev/null || true
+    kubectl delete crd probes.monitoring.coreos.com --ignore-not-found 2>/dev/null || true
+    kubectl delete crd alertmanagers.monitoring.coreos.com --ignore-not-found 2>/dev/null || true
+    kubectl delete crd thanosrulers.monitoring.coreos.com --ignore-not-found 2>/dev/null || true
+    removed=true
+  fi
+
+  if $removed; then
+    step "Cleaned up previous observability releases"
+  fi
+  return 0
+}
+
+install_prometheus_server() {
+  local ns="$observability_namespace"
+
+  header "Installing Prometheus server (standalone)"
+
+  if $dry_run; then
+    warn "[dry-run] helm repo add prometheus-community https://prometheus-community.github.io/helm-charts/"
+    warn "[dry-run] helm upgrade --install ${PROMETHEUS_SERVER_RELEASE} prometheus-community/prometheus -n $ns --values ..."
+    return 0
+  fi
+
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts/ 2>/dev/null || true
+  helm repo update prometheus-community 2>/dev/null || true
+
+  local tmp_values
+  tmp_values="$REPO_DIR/.bootstrap/prometheus-server-values.yaml"
+  mkdir -p "$REPO_DIR/.bootstrap"
+
+  cat > "$tmp_values" <<YAML
+# Lightweight standalone Prometheus for single-node deployments
+alertmanager:
+  enabled: false
+
+kube-state-metrics:
+  enabled: false
+
+prometheus-node-exporter:
+  enabled: false
+
+prometheus-pushgateway:
+  enabled: false
+
+server:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+  retention: 7d
+  global:
+    scrape_interval: 30s
+    evaluation_interval: 30s
+
+# The chart's default Prometheus config already scrapes pods/services annotated
+# with prometheus.io/scrape=true, so shclop uses Service annotations instead of
+# ServiceMonitor CRDs.
+YAML
+
+  helm upgrade --install "${PROMETHEUS_SERVER_RELEASE}" prometheus-community/prometheus \
+    --namespace "$ns" --create-namespace \
+    --values "$tmp_values" \
+    --wait
+
+  rm -f "$tmp_values"
+  step "Prometheus server installed"
+}
+
+install_grafana() {
   local ns="$observability_namespace"
   local host
   host="$(resolve_grafana_host)" || host=""
 
-  header "Installing VictoriaMetrics k8s-stack"
+  header "Installing Grafana (standalone)"
 
   if $dry_run; then
-    warn "[dry-run] helm repo add vm https://victoriametrics.github.io/helm-charts/"
-    warn "[dry-run] helm upgrade --install victoria-metrics-k8s-stack vm/victoria-metrics-k8s-stack -n $ns --values ..."
+    warn "[dry-run] helm repo add grafana https://grafana.github.io/helm-charts/"
+    warn "[dry-run] helm upgrade --install ${GRAFANA_RELEASE} grafana/grafana -n $ns --values ..."
     return 0
   fi
 
-  helm repo add vm https://victoriametrics.github.io/helm-charts/ 2>/dev/null || true
-  helm repo update vm 2>/dev/null || true
+  helm repo add grafana https://grafana.github.io/helm-charts/ 2>/dev/null || true
+  helm repo update grafana 2>/dev/null || true
 
   local tmp_values
-  tmp_values="$(mktemp)"
+  tmp_values="$REPO_DIR/.bootstrap/grafana-values.yaml"
+  mkdir -p "$REPO_DIR/.bootstrap"
 
-  cat > "$tmp_values" <<YAML
-grafana:
-  enabled: true
-  adminPassword: admin
-  ingress:
-    enabled: true
-    ingressClassName: ${INGRESS_CLASS}
-    hosts:
-      - ${host}
-YAML
-
+  # Build Grafana ingress annotation/tls block
+  local grafana_ingress_tls=""
   if [[ -n "$tls_email" ]]; then
-    cat >> "$tmp_values" <<YAML
-    annotations:
-      cert-manager.io/cluster-issuer: ${TLS_CLUSTER_ISSUER}
-    tls:
-      - hosts:
-          - ${host}
-        secretName: grafana-${host//./-}-tls
+    grafana_ingress_tls=$(cat <<YAML
+ingress:
+  enabled: true
+  ingressClassName: ${INGRESS_CLASS}
+  annotations:
+    cert-manager.io/cluster-issuer: ${TLS_CLUSTER_ISSUER}
+  hosts:
+    - ${host}
+  tls:
+    - hosts:
+        - ${host}
+      secretName: grafana-${host//./-}-tls
 YAML
+)
+  else
+    grafana_ingress_tls=$(cat <<YAML
+ingress:
+  enabled: true
+  ingressClassName: ${INGRESS_CLASS}
+  hosts:
+    - ${host}
+YAML
+)
   fi
 
-  cat >> "$tmp_values" <<YAML
-  additionalDataSources:
-    - name: VictoriaLogs
-      type: victorialogs
-      url: http://victoria-logs-victoria-logs-single-server:9428
-      access: proxy
-      isDefault: false
-
-victoria-metrics:
-  single:
+  # Provision a basic home dashboard for QA validation. When sidecar is enabled,
+  # Grafana discovers ConfigMaps with label grafana_dashboard: "1".
+  local grafana_dashboard_provision=""
+  grafana_dashboard_provision=$(cat <<YAML
+sidecar:
+  dashboards:
     enabled: true
+    label: grafana_dashboard
+dashboards:
+  default:
+    shclop-qa-overview:
+      json: |
+        {
+          "title": "Shclop QA Overview",
+          "uid": "shclop-qa-overview",
+          "tags": ["shclop", "qa"],
+          "timezone": "browser",
+          "panels": [
+            {
+              "title": "Backend Status",
+              "type": "stat",
+              "datasource": "Prometheus",
+              "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0},
+              "targets": [{"expr": "up{service=\"shclop-backend\"}", "refId": "A"}],
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {"color": "green", "value": null},
+                      {"color": "red", "value": 0.5}
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "title": "Container Memory",
+              "type": "timeseries",
+              "datasource": "Prometheus",
+              "gridPos": {"h": 6, "w": 8, "x": 8, "y": 0},
+              "targets": [{"expr": "container_memory_usage_bytes{container=\"shclop\"}", "refId": "A"}],
+              "fieldConfig": {"defaults": {"unit": "bytes"}}
+            },
+            {
+              "title": "Container CPU",
+              "type": "timeseries",
+              "datasource": "Prometheus",
+              "gridPos": {"h": 6, "w": 8, "x": 16, "y": 0},
+              "targets": [{"expr": "rate(container_cpu_usage_seconds_total{container=\"shclop\"}[1m]) * 100", "refId": "A"}],
+              "fieldConfig": {"defaults": {"unit": "percent"}}
+            },
+            {
+              "title": "Recent Shclop Logs",
+              "type": "logs",
+              "datasource": "Loki",
+              "gridPos": {"h": 6, "w": 24, "x": 0, "y": 6},
+              "targets": [{"expr": "{job=\"fluentbit\"} |= \"shclop\"", "refId": "A"}]
+            }
+          ],
+          "schemaVersion": 39,
+          "time": {"from": "now-1h", "to": "now"}
+        }
+YAML
+)
 
-prometheus:
-  enabled: false
-
-defaultDashboards:
-  enabled: true
+  cat > "$tmp_values" <<YAML
+# Lightweight standalone Grafana for single-node deployments
+adminPassword: ${GRAFANA_ADMIN_PASSWORD:-CiHuGao7eVT3bpo6}
+defaultDashboardsEnabled: false
+${grafana_ingress_tls}
+${grafana_dashboard_provision}
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://${PROMETHEUS_SERVER_SERVICE:-prometheus-server-server}.${ns}.svc.cluster.local
+        access: proxy
+        isDefault: true
+      - name: Loki
+        type: loki
+        url: http://${LOKI_RELEASE}.${ns}.svc.cluster.local:3100
+        access: proxy
+        isDefault: false
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
 YAML
 
-  local ver_flag=()
-  [[ -n "$VICTORIA_METRICS_STACK_VERSION" ]] && ver_flag=(--version "$VICTORIA_METRICS_STACK_VERSION")
-
-  helm upgrade --install victoria-metrics-k8s-stack vm/victoria-metrics-k8s-stack \
+  helm upgrade --install "${GRAFANA_RELEASE}" grafana/grafana \
     --namespace "$ns" --create-namespace \
     --values "$tmp_values" \
-    "${ver_flag[@]}" \
     --wait
 
   rm -f "$tmp_values"
-  step "VictoriaMetrics k8s-stack installed"
+  step "Grafana installed"
 }
 
-install_victoria_logs() {
+install_loki() {
   local ns="$observability_namespace"
 
-  header "Installing VictoriaLogs"
+  header "Installing Loki (monolithic mode, filesystem storage)"
 
   if $dry_run; then
-    warn "[dry-run] helm upgrade --install victoria-logs vm/victoria-logs-single -n $ns"
+    warn "[dry-run] helm repo add grafana-community https://grafana-community.github.io/helm-charts"
+    warn "[dry-run] helm upgrade --install ${LOKI_RELEASE} grafana-community/loki -n $ns --values ..."
     return 0
   fi
 
-  helm repo add vm https://victoriametrics.github.io/helm-charts/ 2>/dev/null || true
-  helm repo update vm 2>/dev/null || true
+  helm repo add grafana-community https://grafana-community.github.io/helm-charts 2>/dev/null || true
+  helm repo update grafana-community 2>/dev/null || true
 
-  local ver_flag=()
-  [[ -n "$VICTORIA_LOGS_VERSION" ]] && ver_flag=(--version "$VICTORIA_LOGS_VERSION")
+  local tmp_values
+  tmp_values="$REPO_DIR/.bootstrap/loki-values.yaml"
+  mkdir -p "$REPO_DIR/.bootstrap"
 
-  helm upgrade --install victoria-logs vm/victoria-logs-single \
+  cat > "$tmp_values" <<YAML
+# Monolithic Loki with filesystem storage — no MinIO, no gateway, no caches, no canary
+deploymentMode: Monolithic
+
+loki:
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  schemaConfig:
+    configs:
+      - from: 2024-01-01
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+  auth_enabled: false
+
+monitoring:
+  selfMonitoring:
+    enabled: false
+    grafanaAgent:
+      enabled: false
+
+lokiCanary:
+  enabled: false
+
+gateway:
+  enabled: false
+
+minio:
+  enabled: false
+
+chunksCache:
+  enabled: false
+
+resultsCache:
+  enabled: false
+
+singleBinary:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# No extra persistence for demo/lightweight; ephemeral is fine with 7d retention.
+persistence:
+  enabled: false
+
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
+ingester:
+  replicas: 0
+querier:
+  replicas: 0
+queryFrontend:
+  replicas: 0
+queryScheduler:
+  replicas: 0
+distributor:
+  replicas: 0
+compactor:
+  replicas: 0
+indexGateway:
+  replicas: 0
+bloomPlanner:
+  replicas: 0
+bloomBuilder:
+  replicas: 0
+bloomGateway:
+  replicas: 0
+
+test:
+  enabled: false
+YAML
+
+  helm upgrade --install "${LOKI_RELEASE}" grafana-community/loki \
     --namespace "$ns" --create-namespace \
-    "${ver_flag[@]}" \
+    --values "$tmp_values" \
     --wait
 
-  step "VictoriaLogs installed"
+  rm -f "$tmp_values"
+  step "Loki installed"
+}
+
+install_fluent_bit() {
+  local ns="$observability_namespace"
+
+  header "Installing Fluent Bit (DaemonSet, tailing container logs to Loki)"
+
+  if $dry_run; then
+    warn "[dry-run] helm repo add fluent https://fluent.github.io/helm-charts/"
+    warn "[dry-run] helm upgrade --install ${FLUENT_BIT_RELEASE} fluent/fluent-bit -n $ns --values ..."
+    return 0
+  fi
+
+  helm repo add fluent https://fluent.github.io/helm-charts/ 2>/dev/null || true
+  helm repo update fluent 2>/dev/null || true
+
+  local tmp_values
+  tmp_values="$REPO_DIR/.bootstrap/fluent-bit-values.yaml"
+  mkdir -p "$REPO_DIR/.bootstrap"
+
+  # Fluent Bit DaemonSet — tails all container logs and forwards to Loki
+  cat > "$tmp_values" <<YAML
+daemonSet:
+  enabled: true
+
+config:
+  service: |
+    [SERVICE]
+      Daemon Off
+      Flush 1
+      Log_Level info
+      Parsers_File parsers.conf
+      Parsers_File custom_parsers.conf
+      HTTP_Server On
+      HTTP_Listen 0.0.0.0
+      HTTP_Port 2020
+
+  inputs: |
+    [INPUT]
+      Name tail
+      Path /var/log/containers/*.log
+      multiline.parser docker, cri
+      Tag kube.*
+      Mem_Buf_Limit 5MB
+      Skip_Long_Lines On
+
+  filters: |
+    [FILTER]
+      Name kubernetes
+      Match kube.*
+      Merge_Log On
+      Keep_Log Off
+      K8S-Logging.Parser On
+      K8S-Logging.Exclude On
+
+  outputs: |
+    [OUTPUT]
+      Name loki
+      Match *
+      Host ${LOKI_RELEASE}.${ns}.svc.cluster.local
+      Port 3100
+      labels job=fluentbit
+      auto_kubernetes_labels on
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+tolerations:
+  - operator: Exists
+
+# No runtimeClassName — observability pods run on standard containerd/runc
+YAML
+
+  helm upgrade --install "${FLUENT_BIT_RELEASE}" fluent/fluent-bit \
+    --namespace "$ns" --create-namespace \
+    --values "$tmp_values" \
+    --wait
+
+  rm -f "$tmp_values"
+  step "Fluent Bit installed"
 }
 
 install_observability_stack() {
@@ -731,9 +1162,24 @@ install_observability_stack() {
     return 0
   fi
 
-  info "Installing observability stack (VictoriaMetrics, VictoriaLogs, Grafana)..."
-  install_vm_k8s_stack
-  install_victoria_logs
+  info "Installing observability stack (Prometheus + Loki + Fluent Bit + Grafana)..."
+
+  # Clean up old observability releases (VictoriaMetrics, VictoriaLogs, old kube-prometheus-stack)
+  cleanup_old_observability
+
+  # 1. Prometheus server (standalone — no CRD/operator dependency)
+  install_prometheus_server
+
+  # 2. Loki (log storage)
+  install_loki
+
+  # 3. Fluent Bit (log collection DaemonSet)
+  install_fluent_bit
+
+  # 4. Grafana (standalone — datasources configured for Prometheus and Loki)
+  install_grafana
+
+  step "Observability stack installed"
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -817,15 +1263,15 @@ migrationJob:
   enabled: false
 
 # Conservative resources for a 2 vCPU / 4 GB node.
-# Requests move the pod to Burstable QoS, while limits cap burst so LiteLLM
-# does not starve K3s system or shclop workloads.
+# Requests move the pod to Burstable QoS, while limits allow LiteLLM's Python
+# startup burst without starving K3s system or shclop workloads.
 resources:
   requests:
     cpu: 150m
-    memory: 256Mi
+    memory: 512Mi
   limits:
     cpu: 750m
-    memory: 1Gi
+    memory: 2Gi
 
 # More forgiving probes so cold starts and transient resource pressure do not
 # trigger unnecessary restarts.
@@ -911,6 +1357,28 @@ deploy_shclop() {
       --set "llmGateway.baseURL=$(litellm_service_url)"
       --set "llmGateway.existingSecret.name=${LITELLM_MASTER_SECRET}"
       --set "llmGateway.existingSecret.key=api-key"
+    )
+  fi
+
+  if [[ "$enable_observability" == "true" ]]; then
+    # Standalone Prometheus scrapes Service annotations; no ServiceMonitor CRD is installed.
+    helm_args+=(--set "monitoring.serviceMonitor.enabled=false")
+  fi
+
+  if [[ -n "$IMAGE_REPO" ]]; then
+    # Explicit flags must override any stale values file so runtime pods use the
+    # same prebuilt registry tag as the backend image.
+    helm_args+=(
+      --set "image.repository=${IMAGE_REPO}"
+      --set "image.tag=${IMAGE_TAG}"
+      --set "agentRuntime.images.openclaw=${IMAGE_REPO}-runtime-openclaw:${IMAGE_TAG}"
+      --set "agentRuntime.images.nanoclaw=${IMAGE_REPO}-runtime-nanoclaw:${IMAGE_TAG}"
+    )
+  else
+    helm_args+=(
+      --set "image.tag=${IMAGE_TAG}"
+      --set "agentRuntime.images.openclaw=shclop-runtime-openclaw:${IMAGE_TAG}"
+      --set "agentRuntime.images.nanoclaw=shclop-runtime-nanoclaw:${IMAGE_TAG}"
     )
   fi
 
@@ -1003,6 +1471,7 @@ VALUESYAML
     cat >> "$out" <<VALUESYAML
 
 llmGateway:
+  baseURL: $(litellm_service_url)
   litellm:
     enabled: true
     serviceName: ${LITELLM_RELEASE_NAME}
@@ -1050,19 +1519,22 @@ VALUESYAML
     cat >> "$out" <<VALUESYAML
 monitoring:
   serviceMonitor:
-    enabled: true
+    enabled: false
 
 observability:
   retentionDays: 7
-  victoriaMetrics:
+  prometheus:
     enabled: true
-    releaseName: victoria-metrics-k8s-stack
-  victoriaLogs:
+    releaseName: ${PROMETHEUS_SERVER_RELEASE:-prometheus-server}
+  loki:
     enabled: true
-    releaseName: victoria-logs
+    releaseName: ${LOKI_RELEASE:-loki}
+  fluentBit:
+    enabled: true
+    releaseName: ${FLUENT_BIT_RELEASE:-fluent-bit}
   grafana:
     enabled: true
-    releaseName: grafana
+    releaseName: ${GRAFANA_RELEASE:-grafana}
     url: ${grafana_url}
 
 VALUESYAML
@@ -1082,14 +1554,17 @@ action_install() {
     info "Phase: installing system dependencies"
     install_k3s
     install_kata_ubuntu
+    tune_kata_configuration
     configure_containerd_kata
     wait_for_k3s
+    install_helm
   elif $dry_run; then
     warn "[dry-run] --install-deps not set, showing general plan"
     warn "[dry-run] install K3s"
     warn "[dry-run] install Kata Containers"
     warn "[dry-run] configure containerd for Kata"
     warn "[dry-run] restart K3s"
+    warn "[dry-run] install Helm"
   else
     info "Phase: checking existing dependencies"
     if ! is_k3s_installed || ! is_k3s_running; then
@@ -1114,11 +1589,12 @@ action_install() {
   # 4. Internal LLM gateway (optional)
   install_litellm_gateway
 
-  # 5. Deploy shclop
-  deploy_shclop
-
-  # 6. Observability stack (optional)
+  # 5. Observability stack (optional)
+  # Standalone Prometheus + Grafana; no CRD/operator dependency so order relative to shclop doesn't matter.
   install_observability_stack
+
+  # 6. Deploy shclop
+  deploy_shclop
 
   if ! $dry_run; then
     echo ""

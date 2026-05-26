@@ -14,6 +14,7 @@ import {
   createAgent,
   startAgent,
   stopAgent,
+  listModels,
   adminListUsers,
   adminCreateUser,
   adminPatchUser,
@@ -62,6 +63,9 @@ export default function App() {
   const [createRuntime, setCreateRuntime] = useState<'openclaw' | 'nanoclaw'>('openclaw');
   const [createModel, setCreateModel] = useState('');
   const [creating, setCreating] = useState(false);
+  const [availableModels, setAvailableModels] = useState<LLMModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState('');
   const [actionLoading, setActionLoading] = useState('');
 
   // chat
@@ -127,10 +131,11 @@ export default function App() {
       });
   }, [token]);
 
-  // On mount, if we have a token, load agents
+  // On mount, if we have a token, load agents and available models
   useEffect(() => {
     if (!token) return;
     loadAgents();
+    loadAvailableModels();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -143,6 +148,24 @@ export default function App() {
       }
     } catch (err: unknown) {
       setStatusError(err instanceof Error ? err.message : 'Failed to load agents');
+    }
+  }
+
+  async function loadAvailableModels() {
+    setModelsLoading(true);
+    setModelsError('');
+    try {
+      const models = await listModels();
+      setAvailableModels(models);
+      // If the previously selected model is no longer in the list, reset
+      if (models.length > 0 && !models.some(m => m.provider_model === createModel)) {
+        setCreateModel(models[0].provider_model);
+      }
+    } catch (err: unknown) {
+      setModelsError(err instanceof Error ? err.message : 'Failed to load models');
+      setAvailableModels([]);
+    } finally {
+      setModelsLoading(false);
     }
   }
 
@@ -181,6 +204,8 @@ export default function App() {
     setAdminUsers([]);
     setAdminModels([]);
     setAdminGateway(null);
+    setAvailableModels([]);
+    setModelsError('');
     setStatusError('');
   }
 
@@ -559,18 +584,34 @@ export default function App() {
                 </div>
                 <div className="form-group">
                   <label>Model</label>
-                  <input
-                    type="text"
-                    value={createModel}
-                    onChange={(e) => setCreateModel(e.target.value)}
-                    placeholder="gpt-4o"
-                  />
+                  {modelsError || (!modelsLoading && availableModels.length === 0) ? (
+                    <div className="field-error">
+                      {modelsError || 'No models available. Contact an admin.'}
+                    </div>
+                  ) : modelsLoading ? (
+                    <div className="field-loading">Loading models…</div>
+                  ) : (
+                    <select
+                      value={createModel}
+                      onChange={(e) => setCreateModel(e.target.value)}
+                    >
+                      {availableModels.length === 0 ? (
+                        <option value="">No models available</option>
+                      ) : (
+                        availableModels.map((m) => (
+                          <option key={m.id} value={m.provider_model}>
+                            {m.display_name} ({m.provider_model})
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  )}
                 </div>
               </div>
               <button
                 className="btn btn-primary btn-block"
                 onClick={handleCreateAgent}
-                disabled={creating || !createName.trim()}
+                disabled={creating || !createName.trim() || modelsLoading || availableModels.length === 0}
               >
                 {creating ? 'Creating…' : 'Create agent'}
               </button>

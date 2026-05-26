@@ -14,21 +14,25 @@ Configuration
   Bootstrap admin:  {{ .Values.bootstrapAdmin.username }}
   Runtime class:    {{ .Values.agentRuntime.runtimeClassName }}
 
-{{- if or .Values.observability.victoriaMetrics.enabled .Values.observability.victoriaLogs.enabled .Values.observability.grafana.enabled }}
+{{- if or .Values.observability.prometheus.enabled .Values.observability.loki.enabled .Values.observability.fluentBit.enabled .Values.observability.grafana.enabled }}
 
 Observability
 -------------
-{{ if .Values.observability.victoriaMetrics.enabled }}
-  VictoriaMetrics k8s-stack ({{ .Values.observability.retentionDays }}d retention):
-    helm repo add vm https://victoriametrics.github.io/helm-charts/
-    helm install {{ .Values.observability.victoriaMetrics.releaseName }} vm/victoria-metrics-k8s-stack \
-      --set vmcluster.retentionPeriod={{ .Values.observability.retentionDays }}d
+{{ if .Values.observability.prometheus.enabled }}
+  Prometheus (standalone server, {{ .Values.observability.retentionDays }}d retention):
+    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts/
+    helm install {{ .Values.observability.prometheus.releaseName }} prometheus-community/prometheus \
+      --set server.retention={{ .Values.observability.retentionDays }}d
 {{ end }}
-{{ if .Values.observability.victoriaLogs.enabled }}
-  VictoriaLogs ({{ .Values.observability.retentionDays }}d retention):
-    helm repo add vm https://victoriametrics.github.io/helm-charts/
-    helm install {{ .Values.observability.victoriaLogs.releaseName }} vm/victoria-logs-single \
-      --set retentionPeriod={{ .Values.observability.retentionDays }}d
+{{ if .Values.observability.loki.enabled }}
+  Loki (monolithic mode, {{ .Values.observability.retentionDays }}d retention):
+    helm repo add grafana-community https://grafana-community.github.io/helm-charts
+    helm install {{ .Values.observability.loki.releaseName }} grafana-community/loki
+{{ end }}
+{{ if .Values.observability.fluentBit.enabled }}
+  Fluent Bit (DaemonSet, tailing container logs to Loki):
+    helm repo add fluent https://fluent.github.io/helm-charts/
+    helm install {{ .Values.observability.fluentBit.releaseName }} fluent/fluent-bit
 {{ end }}
 {{ if .Values.observability.grafana.enabled }}
   Grafana:

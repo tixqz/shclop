@@ -354,6 +354,22 @@ select {
   font-size: 0.84rem;
 }
 
+.field-error {
+  padding: 6px 10px;
+  background: var(--danger-light);
+  color: var(--danger);
+  border-radius: var(--radius);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.field-loading {
+  padding: 6px 10px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-style: italic;
+}
+
 /* ── Panels ── */
 
 .panel {

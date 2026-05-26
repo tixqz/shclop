@@ -36,6 +36,7 @@ type Config struct {
 	LLMGatewayBaseURL    string
 	LLMGatewaySecretName string
 	LLMGatewaySecretKey  string
+	LLMGatewayAPIKey     string
 
 	// Bootstrap admin
 	BootstrapAdminUsername string
@@ -75,6 +76,7 @@ func Default() Config {
 		LLMGatewayBaseURL:    os.Getenv("SHCLOP_LLM_GATEWAY_BASE_URL"),
 		LLMGatewaySecretName: os.Getenv("SHCLOP_LLM_GATEWAY_SECRET_NAME"),
 		LLMGatewaySecretKey:  os.Getenv("SHCLOP_LLM_GATEWAY_SECRET_KEY"),
+		LLMGatewayAPIKey:     os.Getenv("SHCLOP_LLM_GATEWAY_API_KEY"),
 
 		// Bootstrap admin
 		BootstrapAdminUsername: env("SHCLOP_BOOTSTRAP_ADMIN_USERNAME", "admin"),

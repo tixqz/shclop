@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -357,6 +358,9 @@ func (s *Server) routes() http.Handler {
 	// Agents
 	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/api/agents/", s.handleAgent)
+
+	// Public models (enabled only for any authenticated user)
+	mux.HandleFunc("/api/models", s.handleModels)
 
 	// Admin
 	mux.HandleFunc("/api/admin/users", s.handleAdminUsers)
@@ -895,6 +899,116 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 	s.writeJSON(w, http.StatusOK, updated)
+}
+
+// --- Public Models (enabled only) ---
+
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListEnabledModels(w, r)
+	default:
+		methodNotAllowed(w, "GET")
+	}
+}
+
+func (s *Server) handleListEnabledModels(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	_ = user // any authenticated user (including non-admin) can list enabled models
+
+	allModels, err := s.store.ListLLMModels(r.Context())
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+
+	enabled := make([]domain.LLMModel, 0, len(allModels))
+	for _, m := range allModels {
+		if m.Enabled {
+			enabled = append(enabled, m)
+		}
+	}
+
+	// Check if gateway discovery is configured (enabled + baseURL + API key available)
+	settings, err := s.store.GetLLMGatewaySettings(r.Context())
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+
+	if settings.Enabled && settings.BaseURL != "" && s.cfg.LLMGatewayAPIKey != "" {
+		gatewayModels, err := s.fetchLiteLLMModels(r.Context(), settings.BaseURL, s.cfg.LLMGatewayAPIKey)
+		if err != nil {
+			s.metrics.gatewayErrors.Inc()
+			s.logger.Error("LiteLLM model discovery failed", "error", err)
+			http.Error(w, `{"error":"LLM gateway unavailable"}`, http.StatusBadGateway)
+			return
+		}
+
+		// Only keep enabled models whose provider_model exists in the LiteLLM model set
+		filtered := make([]domain.LLMModel, 0, len(enabled))
+		for _, m := range enabled {
+			if gatewayModels[m.ProviderModel] {
+				filtered = append(filtered, m)
+			}
+		}
+		enabled = filtered
+	}
+
+	if enabled == nil {
+		enabled = []domain.LLMModel{}
+	}
+	s.writeJSON(w, http.StatusOK, enabled)
+}
+
+// fetchLiteLLMModels queries the LiteLLM /v1/models endpoint and returns a set of
+// model IDs (aliases) that the gateway reports as available.
+// It handles both base URLs with and without a trailing /v1 path segment.
+func (s *Server) fetchLiteLLMModels(ctx context.Context, baseURL, apiKey string) (map[string]bool, error) {
+	// Normalise trailing slash
+	u := strings.TrimSuffix(baseURL, "/")
+
+	// Build the model list URL: if baseURL already ends with /v1, just append /models
+	if strings.HasSuffix(u, "/v1") {
+		u += "/models"
+	} else {
+		u += "/v1/models"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("LiteLLM returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	models := make(map[string]bool, len(result.Data))
+	for _, m := range result.Data {
+		models[m.ID] = true
+	}
+	return models, nil
 }
 
 // --- Admin Models ---

@@ -143,16 +143,21 @@ bootstrapAdmin:
 observability:
   # -- Default retention period in days for logs and metrics
   retentionDays: 7
-  # -- VictoriaMetrics k8s-stack guidance (NOT installed by this chart)
-  victoriaMetrics:
+  # -- Prometheus server guidance (NOT installed by this chart)
+  prometheus:
     enabled: false
-    # -- Helm release name of the installed vm-k8s-stack chart
-    releaseName: victoria-metrics
-  # -- VictoriaLogs guidance (NOT installed by this chart)
-  victoriaLogs:
+    # -- Helm release name of the installed standalone prometheus chart
+    releaseName: prometheus-server
+  # -- Loki log storage guidance (NOT installed by this chart)
+  loki:
     enabled: false
-    # -- Helm release name of the installed victoria-logs chart
-    releaseName: victoria-logs
+    # -- Helm release name of the installed loki chart
+    releaseName: loki
+  # -- Fluent Bit log collection guidance (NOT installed by this chart)
+  fluentBit:
+    enabled: false
+    # -- Helm release name of the installed fluent-bit chart
+    releaseName: fluent-bit
   # -- Grafana guidance (NOT installed by this chart)
   grafana:
     enabled: false

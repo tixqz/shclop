@@ -406,10 +406,231 @@ func TestActivity(t *testing.T) {
 	}
 }
 
+func TestModels_EnabledModels(t *testing.T) {
+	server := newTestServer()
+	adminToken := loginAsAdmin(t, server)
+
+	// Create a regular (non-admin) user
+	created := doJSON(t, server, http.MethodPost, "/api/admin/users", map[string]string{
+		"username": "alice",
+		"password": "secret",
+		"role":     "user",
+	}, adminToken)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create user: %d: %s", created.Code, created.Body.String())
+	}
+	userToken := loginAs(t, server, "alice", "secret")
+
+	// Create enabled model
+	doJSON(t, server, http.MethodPost, "/api/admin/models", map[string]any{
+		"display_name":   "GPT-4o",
+		"provider_model": "openai/gpt-4o",
+		"enabled":        true,
+	}, adminToken)
+
+	// Create disabled model
+	doJSON(t, server, http.MethodPost, "/api/admin/models", map[string]any{
+		"display_name":   "Disabled Model",
+		"provider_model": "test/disabled",
+		"enabled":        false,
+	}, adminToken)
+
+	// Regular user GET /api/models — should see only enabled models
+	listed := doJSON(t, server, http.MethodGet, "/api/models", nil, userToken)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("expected status %d for GET /api/models, got %d: %s", http.StatusOK, listed.Code, listed.Body.String())
+	}
+	models := assertJSONArray(t, listed.Body.Bytes(), "")
+	if len(models) != 1 {
+		t.Fatalf("expected 1 enabled model, got %d: %+v", len(models), models)
+	}
+	if models[0]["provider_model"] != "openai/gpt-4o" {
+		t.Fatalf("expected provider_model openai/gpt-4o, got %v", models[0]["provider_model"])
+	}
+	if models[0]["enabled"] != true {
+		t.Fatalf("expected enabled=true, got %v", models[0]["enabled"])
+	}
+
+	// Unauthenticated GET /api/models — should be 401
+	noAuth := doJSON(t, server, http.MethodGet, "/api/models", nil, "")
+	if noAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d for unauthenticated GET /api/models, got %d", http.StatusUnauthorized, noAuth.Code)
+	}
+
+	// POST /api/models — should be 405
+	postResp := doJSON(t, server, http.MethodPost, "/api/models", map[string]any{
+		"display_name": "should-not-work",
+	}, userToken)
+	if postResp.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d for POST /api/models, got %d", http.StatusMethodNotAllowed, postResp.Code)
+	}
+
+	// PATCH /api/models — should be 405
+	patchResp := doJSON(t, server, http.MethodPatch, "/api/models", map[string]any{}, userToken)
+	if patchResp.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d for PATCH /api/models, got %d", http.StatusMethodNotAllowed, patchResp.Code)
+	}
+
+	// Regular user GET /api/admin/models — should be 403
+	adminForbidden := doJSON(t, server, http.MethodGet, "/api/admin/models", nil, userToken)
+	if adminForbidden.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d for regular user GET /api/admin/models, got %d", http.StatusForbidden, adminForbidden.Code)
+	}
+}
+
+func TestModels_GatewayDiscovery_FiltersByGateway(t *testing.T) {
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// LiteLLM returns models at /v1/models
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("expected /v1/models, got %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-api-key" {
+			t.Errorf("expected Bearer test-api-key, got %s", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "gpt-4", "object": "model", "created": 123, "owned_by": "openai"},
+				{"id": "claude-3", "object": "model", "created": 124, "owned_by": "anthropic"},
+			},
+		})
+	}))
+	defer mockLLM.Close()
+
+	cfg := config.Config{
+		Store:             "inmemory",
+		LLMGatewayBaseURL: mockLLM.URL,
+		LLMGatewayAPIKey:  "test-api-key",
+	}
+	server := newTestServerWithConfig(cfg)
+	token := loginAsAdmin(t, server)
+
+	// Create enabled model that matches a LiteLLM model
+	doJSON(t, server, http.MethodPost, "/api/admin/models", map[string]any{
+		"display_name":   "GPT-4",
+		"provider_model": "gpt-4",
+		"enabled":        true,
+	}, token)
+
+	// Create enabled model that does NOT appear in LiteLLM
+	doJSON(t, server, http.MethodPost, "/api/admin/models", map[string]any{
+		"display_name":   "Not in Gateway",
+		"provider_model": "test/not-in-gateway",
+		"enabled":        true,
+	}, token)
+
+	// Create disabled model that matches LiteLLM (should NOT appear)
+	doJSON(t, server, http.MethodPost, "/api/admin/models", map[string]any{
+		"display_name":   "Disabled GPT-4",
+		"provider_model": "gpt-4",
+		"enabled":        false,
+	}, token)
+
+	// Create a regular user
+	doJSON(t, server, http.MethodPost, "/api/admin/users", map[string]string{
+		"username": "alice",
+		"password": "secret",
+		"role":     "user",
+	}, token)
+	userToken := loginAs(t, server, "alice", "secret")
+
+	listed := doJSON(t, server, http.MethodGet, "/api/models", nil, userToken)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", listed.Code, listed.Body.String())
+	}
+	models := assertJSONArray(t, listed.Body.Bytes(), "")
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model (only gpt-4 matching gateway), got %d: %+v", len(models), models)
+	}
+	if models[0]["provider_model"] != "gpt-4" {
+		t.Fatalf("expected provider_model gpt-4, got %v", models[0]["provider_model"])
+	}
+	if models[0]["enabled"] != true {
+		t.Fatalf("expected enabled=true, got %v", models[0]["enabled"])
+	}
+}
+
+func TestModels_GatewayDiscovery_FailsWith502(t *testing.T) {
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer mockLLM.Close()
+
+	cfg := config.Config{
+		Store:             "inmemory",
+		LLMGatewayBaseURL: mockLLM.URL,
+		LLMGatewayAPIKey:  "test-api-key",
+	}
+	server := newTestServerWithConfig(cfg)
+	token := loginAsAdmin(t, server)
+
+	// Create enabled model
+	doJSON(t, server, http.MethodPost, "/api/admin/models", map[string]any{
+		"display_name":   "GPT-4",
+		"provider_model": "gpt-4",
+		"enabled":        true,
+	}, token)
+
+	// Create a regular user
+	doJSON(t, server, http.MethodPost, "/api/admin/users", map[string]string{
+		"username": "alice",
+		"password": "secret",
+		"role":     "user",
+	}, token)
+	userToken := loginAs(t, server, "alice", "secret")
+
+	listed := doJSON(t, server, http.MethodGet, "/api/models", nil, userToken)
+	if listed.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway for LiteLLM failure, got %d: %s", listed.Code, listed.Body.String())
+	}
+}
+
+func TestModels_GatewayDiscovery_NoGatewayConfig(t *testing.T) {
+	// When no gateway is configured, /api/models returns all enabled store models.
+	server := newTestServer()
+	adminToken := loginAsAdmin(t, server)
+
+	// Create a regular user
+	doJSON(t, server, http.MethodPost, "/api/admin/users", map[string]string{
+		"username": "alice",
+		"password": "secret",
+		"role":     "user",
+	}, adminToken)
+	userToken := loginAs(t, server, "alice", "secret")
+
+	// Create enabled model
+	doJSON(t, server, http.MethodPost, "/api/admin/models", map[string]any{
+		"display_name":   "GPT-4o",
+		"provider_model": "openai/gpt-4o",
+		"enabled":        true,
+	}, adminToken)
+
+	// Create disabled model
+	doJSON(t, server, http.MethodPost, "/api/admin/models", map[string]any{
+		"display_name":   "Disabled Model",
+		"provider_model": "test/disabled",
+		"enabled":        false,
+	}, adminToken)
+
+	// Regular user GET /api/models — should see only enabled models (unchanged behavior)
+	listed := doJSON(t, server, http.MethodGet, "/api/models", nil, userToken)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", listed.Code, listed.Body.String())
+	}
+	models := assertJSONArray(t, listed.Body.Bytes(), "")
+	if len(models) != 1 {
+		t.Fatalf("expected 1 enabled model, got %d: %+v", len(models), models)
+	}
+	if models[0]["provider_model"] != "openai/gpt-4o" {
+		t.Fatalf("expected provider_model openai/gpt-4o, got %v", models[0]["provider_model"])
+	}
+}
+
 func TestAgentsRequireAuth(t *testing.T) {
 	server := newTestServer()
 
-	for _, path := range []string{"/api/agents", "/api/me", "/api/admin/users", "/api/admin/models", "/api/admin/llm-gateway", "/api/admin/overview", "/api/activity"} {
+	for _, path := range []string{"/api/agents", "/api/me", "/api/admin/users", "/api/admin/models", "/api/admin/llm-gateway", "/api/admin/overview", "/api/activity", "/api/models"} {
 		t.Run(path, func(t *testing.T) {
 			response := doJSON(t, server, http.MethodGet, path, nil, "")
 			if response.Code != http.StatusUnauthorized {

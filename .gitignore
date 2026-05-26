@@ -1,7 +1,9 @@
 .worktrees/
 .firecrawl/
 .bootstrap/
+.scratch/
 bin/
+dogfood-output/
 web/node_modules/
 web/dist/
 docs/superpowers
