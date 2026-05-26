@@ -83,11 +83,11 @@ Status markers are intentionally conservative: an item is checked only after the
 
 ## 10. Bob cannot list available models
 
-- [ ] Verified fixed on target environment
+- [x] Verified fixed on target environment
 - Severity: Medium
 - Evidence: Bob can create agents only by typing a free-form model string in the UI. `GET /api/models` returned `404` for Bob, while model administration is admin-only.
 - Required change: expose a read-only model list to regular users, or make the UI clearly document/validate accepted model strings for non-admin users.
-- Implementation status: backend now exposes `GET /api/models` for authenticated users. Without gateway discovery config it returns enabled store models for development; when LiteLLM gateway discovery is configured, it calls LiteLLM `/v1/models` with `SHCLOP_LLM_GATEWAY_API_KEY` and returns only enabled store models whose `provider_model` appears in the gateway model IDs. `/api/admin/models` remains admin-only. The Helm chart injects `SHCLOP_LLM_GATEWAY_API_KEY` from the configured gateway Secret. The SPA now loads `/api/models` for all logged-in users and uses a model dropdown in the agent creation form. Backend tests cover regular-user listing, disabled-model filtering, gateway intersection filtering, gateway failure as 502, unauthenticated requests, disallowed mutation methods, and continued admin-route denial for regular users. This still needs deployment through GitHub Actions and a fresh Bob UI retest before the checkbox can be marked.
+- Verification status: fixed on the target host after GitHub Actions deployment of image tag `sha-385ae91d251ed3f3c1f3a122f45f822e0856a90a`. Backend exposes `GET /api/models` for authenticated users. Without gateway discovery config it returns enabled store models for development; when LiteLLM gateway discovery is configured, it calls LiteLLM `/v1/models` with `SHCLOP_LLM_GATEWAY_API_KEY` and returns only enabled store models whose `provider_model` appears in the gateway model IDs. `/api/admin/models` remains admin-only. The Helm chart injects `SHCLOP_LLM_GATEWAY_API_KEY` from the configured gateway Secret. The deployed Bob API check returned HTTP 200 with `DeepSeek V4 Flash (deepseek-v4-flash)`, and the Bob UI agent creation form now renders a model dropdown instead of a free-text input. The existing old Bob agents still show their historical model string (`deepseek/deepseek-v4-flash:free`) until recreated or migrated.
 
 ## 11. Grafana datasource/dashboard fixes are not persisted in bootstrap
 
