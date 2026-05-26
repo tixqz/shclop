@@ -970,6 +970,58 @@ tbody tr:hover {
   padding: 24px 16px !important;
 }
 
+/* ── Integrations ── */
+
+.integration-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.integration-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.integration-detail-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.integration-detail-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.integration-token-section {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.integration-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.integration-hint {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  padding: 8px 12px;
+  background: var(--warning-light);
+  border-radius: var(--radius);
+  border: 1px solid var(--border-light);
+}
+
 /* ── Responsive ── */
 
 @media (max-width: 820px) {

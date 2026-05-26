@@ -36,6 +36,14 @@ type Store interface {
 	GetLLMGatewaySettings(ctx context.Context) (domain.LLMGatewaySettings, error)
 	UpsertLLMGatewaySettings(ctx context.Context, enabled bool, baseURL, secretName, secretKey string) (domain.LLMGatewaySettings, error)
 
+	// Integrations
+	UpsertIntegrationConnection(ctx context.Context, connection domain.IntegrationConnection) (domain.IntegrationConnection, error)
+	GetIntegrationConnection(ctx context.Context, userID, providerID string) (domain.IntegrationConnection, error)
+	DeleteIntegrationConnection(ctx context.Context, userID, providerID string) error
+	UpsertAgentIntegration(ctx context.Context, agentID, providerID string, enabled bool, revision int64, status string) (domain.AgentIntegration, error)
+	ListAgentIntegrations(ctx context.Context, agentID string) ([]domain.AgentIntegration, error)
+	GetAgentIntegration(ctx context.Context, agentID, providerID string) (domain.AgentIntegration, error)
+
 	// Bootstrap
 	BootstrapAdmin(ctx context.Context, username, passwordHash string) error
 }
@@ -56,6 +64,9 @@ type Memory struct {
 	gatewaySecret  string
 	gatewayKey     string
 	gatewayUpdated time.Time
+
+	integrations       []domain.IntegrationConnection
+	agentIntegrations  []domain.AgentIntegration
 }
 
 func NewMemory() *Memory {
@@ -365,6 +376,159 @@ func (m *Memory) UpsertLLMGatewaySettings(ctx context.Context, enabled bool, bas
 	}
 	m.mu.Unlock()
 	return s, nil
+}
+
+// --- Integrations: Connections ---
+
+func (m *Memory) UpsertIntegrationConnection(ctx context.Context, connection domain.IntegrationConnection) (domain.IntegrationConnection, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.IntegrationConnection{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now().UTC()
+
+	// Store secret in memory as-is (encrypted at rest by caller).
+	// The memory store keeps the protected value in memory intentionally;
+	// the encrypted form is what was passed in.
+
+	for i, c := range m.integrations {
+		if c.ProviderID == connection.ProviderID && c.UserID == connection.UserID {
+			// Update existing
+			revision := c.Revision + 1
+			if connection.Revision > revision {
+				revision = connection.Revision
+			}
+			m.integrations[i].ExternalAccountID = connection.ExternalAccountID
+			m.integrations[i].ExternalLogin = connection.ExternalLogin
+			m.integrations[i].AccountType = connection.AccountType
+			m.integrations[i].Status = connection.Status
+			m.integrations[i].Secret = connection.Secret
+			m.integrations[i].Revision = revision
+			m.integrations[i].UpdatedAt = now
+			return m.integrations[i], nil
+		}
+	}
+
+	// Insert new
+	conn := connection
+	if conn.Revision == 0 {
+		conn.Revision = 1
+	}
+	conn.CreatedAt = now
+	conn.UpdatedAt = now
+	m.integrations = append(m.integrations, conn)
+	return conn, nil
+}
+
+func (m *Memory) GetIntegrationConnection(ctx context.Context, userID, providerID string) (domain.IntegrationConnection, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.IntegrationConnection{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.integrations {
+		if c.UserID == userID && c.ProviderID == providerID {
+			return c, nil
+		}
+	}
+	return domain.IntegrationConnection{}, ErrNotFound
+}
+
+func (m *Memory) DeleteIntegrationConnection(ctx context.Context, userID, providerID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, c := range m.integrations {
+		if c.UserID == userID && c.ProviderID == providerID {
+			m.integrations = append(m.integrations[:i], m.integrations[i+1:]...)
+			// Also remove all agent integrations for this provider under any of the user's agents.
+			var remaining []domain.AgentIntegration
+			for _, ai := range m.agentIntegrations {
+				if ai.ProviderID != providerID {
+					remaining = append(remaining, ai)
+				}
+			}
+			m.agentIntegrations = remaining
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// --- Integrations: Agent Integrations ---
+
+func (m *Memory) UpsertAgentIntegration(ctx context.Context, agentID, providerID string, enabled bool, revision int64, status string) (domain.AgentIntegration, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.AgentIntegration{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now().UTC()
+
+	for i, ai := range m.agentIntegrations {
+		if ai.AgentID == agentID && ai.ProviderID == providerID {
+			// Update existing
+			newRevision := ai.Revision + 1
+			if revision > newRevision {
+				newRevision = revision
+			}
+			m.agentIntegrations[i].Enabled = enabled
+			m.agentIntegrations[i].Revision = newRevision
+			m.agentIntegrations[i].Status = status
+			m.agentIntegrations[i].UpdatedAt = now
+			return m.agentIntegrations[i], nil
+		}
+	}
+
+	// Insert new
+	ai := domain.AgentIntegration{
+		AgentID:    agentID,
+		ProviderID: providerID,
+		Enabled:    enabled,
+		Revision:   1,
+		Status:     status,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	m.agentIntegrations = append(m.agentIntegrations, ai)
+	return ai, nil
+}
+
+func (m *Memory) ListAgentIntegrations(ctx context.Context, agentID string) ([]domain.AgentIntegration, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.AgentIntegration
+	for _, ai := range m.agentIntegrations {
+		if ai.AgentID == agentID {
+			out = append(out, ai)
+		}
+	}
+	if out == nil {
+		return []domain.AgentIntegration{}, nil
+	}
+	return out, nil
+}
+
+func (m *Memory) GetAgentIntegration(ctx context.Context, agentID, providerID string) (domain.AgentIntegration, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.AgentIntegration{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ai := range m.agentIntegrations {
+		if ai.AgentID == agentID && ai.ProviderID == providerID {
+			return ai, nil
+		}
+	}
+	return domain.AgentIntegration{}, ErrNotFound
 }
 
 // --- Bootstrap ---

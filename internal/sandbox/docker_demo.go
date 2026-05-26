@@ -17,6 +17,7 @@ type StartRequest struct {
 	LLMGatewayBaseURL    string
 	LLMGatewaySecretName string
 	LLMGatewaySecretKey  string
+	IntegrationEnv       map[string]string // additional env vars from integrations (e.g. GITHUB_TOKEN)
 }
 
 type RuntimeLease struct {
@@ -77,8 +78,15 @@ func (p DockerDemoProvider) Start(ctx context.Context, request StartRequest) (Ru
 		"-e", "SHCLOP_AGENT_ID=" + request.AgentID,
 		"-e", "SHCLOP_RUNTIME_TOKEN=" + request.RuntimeToken,
 		"-e", "SHCLOP_AGENT_FLAVOR=" + runtime,
-		image,
 	}
+
+	// Add integration environment variables (e.g. GITHUB_TOKEN)
+	for k, v := range request.IntegrationEnv {
+		// Do not log secrets; just add to args
+		args = append(args, "-e", k+"="+v)
+	}
+
+	args = append(args, image)
 	if err := runner.Run(ctx, args...); err != nil {
 		return RuntimeLease{}, err
 	}

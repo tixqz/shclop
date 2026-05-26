@@ -3,6 +3,7 @@ import {
   type Agent,
   type AdminOverview,
   type ChatEvent,
+  type IntegrationProvider,
   type LLMGatewaySettings,
   type LLMModel,
   type User,
@@ -14,6 +15,10 @@ import {
   createAgent,
   startAgent,
   stopAgent,
+  listIntegrations,
+  connectGitHub,
+  disconnectGitHub,
+  setAgentGitHubIntegration,
   listModels,
   adminListUsers,
   adminCreateUser,
@@ -26,7 +31,7 @@ import {
   adminGetOverview,
 } from './api';
 
-type Page = 'agents' | 'admin';
+type Page = 'agents' | 'integrations' | 'admin';
 
 type AdminTab = 'overview' | 'users' | 'models' | 'gateway';
 
@@ -67,6 +72,13 @@ export default function App() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
   const [actionLoading, setActionLoading] = useState('');
+
+  // integrations
+  const [integrationProviders, setIntegrationProviders] = useState<IntegrationProvider[]>([]);
+  const [integrationsLoading, setIntegrationsLoading] = useState(false);
+  const [integrationToken, setIntegrationToken] = useState('');
+  const [integrationSaving, setIntegrationSaving] = useState(false);
+  const [integrationAction, setIntegrationAction] = useState('');
 
   // chat
   const [chatText, setChatText] = useState('');
@@ -109,6 +121,10 @@ export default function App() {
   const selectedAgent = useMemo(
     () => agents.find((a) => a.id === selectedAgentId) ?? null,
     [agents, selectedAgentId],
+  );
+  const githubProvider = useMemo(
+    () => integrationProviders.find((p) => p.provider_id === 'github') ?? null,
+    [integrationProviders],
   );
   const isAdmin = user?.role === 'admin';
 
@@ -205,6 +221,8 @@ export default function App() {
     setAdminModels([]);
     setAdminGateway(null);
     setAvailableModels([]);
+    setIntegrationProviders([]);
+    setIntegrationToken('');
     setModelsError('');
     setStatusError('');
   }
@@ -254,6 +272,67 @@ export default function App() {
       setStatusError(err instanceof Error ? err.message : 'Failed to stop agent');
     } finally {
       setActionLoading('');
+    }
+  }
+
+  async function loadIntegrations() {
+    setIntegrationsLoading(true);
+    try {
+      const summary = await listIntegrations();
+      setIntegrationProviders(summary.providers ?? []);
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to load integrations');
+    } finally {
+      setIntegrationsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (token && page === 'integrations') {
+      loadIntegrations();
+      loadAgents(); // ensure fresh agent list for per-agent bindings
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, page]);
+
+  async function handleConnectGitHub() {
+    if (!integrationToken.trim()) return;
+    setIntegrationSaving(true);
+    setStatusError('');
+    try {
+      await connectGitHub(integrationToken.trim());
+      setIntegrationToken('');
+      await loadIntegrations();
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to connect GitHub');
+    } finally {
+      setIntegrationSaving(false);
+    }
+  }
+
+  async function handleDisconnectGitHub() {
+    setIntegrationSaving(true);
+    setStatusError('');
+    try {
+      await disconnectGitHub();
+      await loadIntegrations();
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to disconnect GitHub');
+    } finally {
+      setIntegrationSaving(false);
+    }
+  }
+
+  async function handleToggleAgentIntegration(agentId: string, enabled: boolean) {
+    setIntegrationAction(agentId);
+    setStatusError('');
+    try {
+      await setAgentGitHubIntegration(agentId, enabled);
+      await loadIntegrations();
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to update agent integration');
+    } finally {
+      setIntegrationAction('');
     }
   }
 
@@ -516,6 +595,12 @@ export default function App() {
               onClick={() => setPage('agents')}
             >
               Agents
+            </button>
+            <button
+              className={`topbar-tab ${page === 'integrations' ? 'active' : ''}`}
+              onClick={() => setPage('integrations')}
+            >
+              Integrations
             </button>
             {isAdmin ? (
               <button
@@ -1190,6 +1275,175 @@ export default function App() {
                 </div>
               </div>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── Integrations Page ── */}
+      {page === 'integrations' ? (
+        <div className="page-layout page-layout-single">
+          <div className="panel panel-main">
+
+            {/* GitHub integration card */}
+            <div className="card card-detail">
+              <div className="detail-head">
+                <div>
+                  <h2>GitHub Integration</h2>
+                </div>
+                {!integrationsLoading ? (
+                  githubProvider?.connected ? (
+                    <span className="badge badge-active">Connected</span>
+                  ) : (
+                    <span className="badge badge-disabled">Disconnected</span>
+                  )
+                ) : null}
+              </div>
+
+              {integrationsLoading ? (
+                <div className="field-loading" style={{ marginTop: 12 }}>Loading integrations…</div>
+              ) : githubProvider?.connected && githubProvider?.connection ? (
+                <>
+                  {/* Connection details */}
+                  <div className="integration-details">
+                    <div className="integration-detail-item">
+                      <span className="integration-detail-label">GitHub Login</span>
+                      <span className="integration-detail-value">{githubProvider.connection.external_login}</span>
+                    </div>
+                    <div className="integration-detail-item">
+                      <span className="integration-detail-label">Account Type</span>
+                      <span className="integration-detail-value">{githubProvider.connection.account_type}</span>
+                    </div>
+                    <div className="integration-detail-item">
+                      <span className="integration-detail-label">Status</span>
+                      <span className="integration-detail-value">{githubProvider.connection.status}</span>
+                    </div>
+                    <div className="integration-detail-item">
+                      <span className="integration-detail-label">Revision</span>
+                      <span className="integration-detail-value">{githubProvider.connection.revision}</span>
+                    </div>
+                  </div>
+
+                  {/* Token update / disconnect */}
+                  <div className="integration-token-section">
+                    <div className="form-group">
+                      <label>Update Personal Access Token</label>
+                      <input
+                        type="password"
+                        value={integrationToken}
+                        onChange={(e) => setIntegrationToken(e.target.value)}
+                        placeholder="New GitHub PAT…"
+                      />
+                    </div>
+                    <div className="integration-actions">
+                      <button
+                        className="btn btn-primary"
+                        onClick={handleConnectGitHub}
+                        disabled={!integrationToken.trim() || integrationSaving}
+                      >
+                        {integrationSaving ? 'Updating…' : 'Update token'}
+                      </button>
+                      <button
+                        className="btn btn-danger"
+                        onClick={handleDisconnectGitHub}
+                        disabled={integrationSaving}
+                      >
+                        {integrationSaving ? 'Disconnecting…' : 'Disconnect'}
+                      </button>
+                    </div>
+                    <div className="integration-hint">
+                      Use a fine-grained GitHub PAT with minimal repository permissions (contents: read, pull requests: read/write).
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* Connect form */}
+                  <div className="form-group">
+                    <label>Personal Access Token (PAT)</label>
+                    <input
+                      type="password"
+                      value={integrationToken}
+                      onChange={(e) => setIntegrationToken(e.target.value)}
+                      placeholder="github_pat_…"
+                    />
+                  </div>
+                  <div className="integration-hint">
+                    Use a fine-grained GitHub PAT with minimal repository permissions (contents: read, pull requests: read/write).
+                  </div>
+                  <div className="integration-actions">
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleConnectGitHub}
+                      disabled={!integrationToken.trim() || integrationSaving}
+                    >
+                      {integrationSaving ? 'Connecting…' : 'Connect GitHub'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Per-agent enablement */}
+            <h2 style={{ marginTop: 8 }}>Per-Agent GitHub Integration</h2>
+            <div className="card card-table">
+              {agents.length === 0 ? (
+                <div className="empty-state">No agents found. Create an agent first.</div>
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Runtime</th>
+                      <th>Model</th>
+                      <th>GitHub</th>
+                      <th>Status</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {agents.map((agent) => {
+                      const binding = githubProvider?.agent_bindings.find(
+                        (b) => b.agent_id === agent.id,
+                      );
+                      return (
+                        <tr key={agent.id}>
+                          <td><strong>{agent.name}</strong></td>
+                          <td><span className="tag">{agent.runtime}</span></td>
+                          <td><span className="tag tag-model">{agent.model}</span></td>
+                          <td>
+                            {binding?.enabled ? (
+                              <span className="badge badge-active">Enabled</span>
+                            ) : (
+                              <span className="badge badge-disabled">Disabled</span>
+                            )}
+                          </td>
+                          <td>{binding?.status ?? '—'}</td>
+                          <td>
+                            <button
+                              className="btn btn-sm"
+                              onClick={() =>
+                                handleToggleAgentIntegration(agent.id, !binding?.enabled)
+                              }
+                              disabled={
+                                !githubProvider?.connected ||
+                                integrationAction === agent.id
+                              }
+                            >
+                              {integrationAction === agent.id
+                                ? '…'
+                                : binding?.enabled
+                                ? 'Disable'
+                                : 'Enable'}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
           </div>
         </div>
       ) : null}

@@ -24,6 +24,7 @@ import (
 	"github.com/mipopov/shclop/internal/config"
 	"github.com/mipopov/shclop/internal/domain"
 	"github.com/mipopov/shclop/internal/gateway"
+	"github.com/mipopov/shclop/internal/integrations"
 	"github.com/mipopov/shclop/internal/sandbox"
 	"github.com/mipopov/shclop/internal/store"
 	"github.com/prometheus/client_golang/prometheus"
@@ -46,19 +47,20 @@ func sameOriginOrNoOrigin(r *http.Request) bool {
 }
 
 type Server struct {
-	cfg         config.Config
-	auth        *auth.Service
-	store       store.Store
-	runtime     *gateway.RuntimeRegistry
-	sandbox     sandbox.RuntimeProvider
-	tokens      map[string]string
-	tokenMu     sync.Mutex
-	activityMu  sync.Mutex
-	activity    []activityEntry
-	logger      *slog.Logger
-	handler     http.Handler
-	metrics     *MetricsCollectors
-	bootstrapMu sync.Once
+	cfg          config.Config
+	auth         *auth.Service
+	store        store.Store
+	runtime      *gateway.RuntimeRegistry
+	sandbox      sandbox.RuntimeProvider
+	integrations *integrations.Service
+	tokens       map[string]string
+	tokenMu      sync.Mutex
+	activityMu   sync.Mutex
+	activity     []activityEntry
+	logger       *slog.Logger
+	handler      http.Handler
+	metrics      *MetricsCollectors
+	bootstrapMu  sync.Once
 }
 
 type MetricsCollectors struct {
@@ -179,15 +181,31 @@ func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
 
 	metrics := newMetricsCollectors()
 
+	// Initialize integrations service
+	secretBox, err := integrations.NewSecretBoxFromConfig(cfg.IntegrationEncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("integrations secret box: %w", err)
+	}
+	integrationService := integrations.NewService(openedStore, secretBox, logger)
+	// Register providers
+	integrationService.RegisterProvider(integrations.NewGitHubProvider(integrations.GitHubProviderConfig{}))
+
+	if cfg.Dev || cfg.Store == "inmemory" || cfg.SandboxProvider == "mock" {
+		if logger != nil {
+			logger.Info("integrations: using dev mode — encryption key is derived; set SHCLOP_INTEGRATION_ENCRYPTION_KEY for production")
+		}
+	}
+
 	server := &Server{
-		cfg:     cfg,
-		auth:    authService,
-		store:   openedStore,
-		runtime: gateway.NewRuntimeRegistry(),
-		sandbox: sandboxProvider,
-		tokens:  map[string]string{},
-		logger:  logger,
-		metrics: metrics,
+		cfg:          cfg,
+		auth:         authService,
+		store:        openedStore,
+		runtime:      gateway.NewRuntimeRegistry(),
+		sandbox:      sandboxProvider,
+		integrations: integrationService,
+		tokens:       map[string]string{},
+		logger:       logger,
+		metrics:      metrics,
 	}
 	server.handler = server.withMetrics(server.routes())
 	return server, nil
@@ -359,6 +377,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/api/agents/", s.handleAgent)
 
+	// Integrations
+	mux.HandleFunc("/api/integrations", s.handleIntegrations)
+	mux.HandleFunc("/api/integrations/", s.handleIntegration)
+
 	// Public models (enabled only for any authenticated user)
 	mux.HandleFunc("/api/models", s.handleModels)
 
@@ -484,6 +506,10 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/agents/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) >= 3 && parts[1] == "integrations" {
+		s.handleAgentIntegration(w, r, parts[0], parts[2])
+		return
+	}
 	if len(parts) == 2 && parts[1] == "start" {
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w, http.MethodPost)
@@ -662,6 +688,45 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 		return
 	}
 
+	// Resolve integration environment variables for enabled agent integrations.
+	integrationEnv := make(map[string]string)
+	agentIntegrations, err := s.integrations.ListAgentIntegrations(r.Context(), agentID)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	for _, ai := range agentIntegrations {
+		if !ai.Enabled {
+			continue
+		}
+		provider := s.integrations.Provider(ai.ProviderID)
+		if provider == nil {
+			continue
+		}
+		token, err := s.integrations.DecryptToken(r.Context(), user.ID, ai.ProviderID)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Error("failed to decrypt integration token",
+					"agent_id", agentID,
+					"provider", ai.ProviderID,
+					"error", err,
+				)
+			}
+			continue
+		}
+		env := provider.BuildRuntimeEnv(token)
+		for k, v := range env {
+			integrationEnv[k] = v
+		}
+		// Ref: Do not log secrets — only log which integration was resolved.
+		if s.logger != nil {
+			s.logger.Info("integration env resolved for agent",
+				"agent_id", agentID,
+				"provider", ai.ProviderID,
+			)
+		}
+	}
+
 	secret, err := randomSecret()
 	if err != nil {
 		s.writeStoreError(w, err)
@@ -694,6 +759,7 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 		LLMGatewayBaseURL:    settings.BaseURL,
 		LLMGatewaySecretName: settings.SecretName,
 		LLMGatewaySecretKey:  settings.SecretKey,
+		IntegrationEnv:       integrationEnv,
 	})
 	if err != nil {
 		_, _ = s.store.UpdateAgentState(r.Context(), agentID, "idle")
@@ -765,6 +831,174 @@ func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request, agentID
 	s.metrics.agentStops.Inc()
 	s.recordActivity("agent.stopped", user.ID, agentID, "agent stopped", nil)
 	s.writeJSON(w, http.StatusOK, agent)
+}
+
+// --- Integrations ---
+
+func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	s.handleListIntegrations(w, r)
+}
+
+func (s *Server) handleIntegration(w http.ResponseWriter, r *http.Request) {
+	// Path: /api/integrations/{provider}/...
+	path := strings.TrimPrefix(r.URL.Path, "/api/integrations/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 1 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	providerID := parts[0]
+
+	if len(parts) >= 2 && parts[1] == "connection" {
+		switch r.Method {
+		case http.MethodPut:
+			s.handleConnectIntegration(w, r, providerID)
+		case http.MethodDelete:
+			s.handleDisconnectIntegration(w, r, providerID)
+		default:
+			methodNotAllowed(w, "PUT, DELETE")
+		}
+		return
+	}
+
+	http.NotFound(w, r)
+}
+
+func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	summary, err := s.integrations.BuildSummary(r.Context(), user.ID)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, summary)
+}
+
+func (s *Server) handleConnectIntegration(w http.ResponseWriter, r *http.Request, providerID string) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	var request struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if request.Token == "" {
+		http.Error(w, "token is required", http.StatusBadRequest)
+		return
+	}
+
+	// ValidatePAT with provider; only save on success
+	conn, err := s.integrations.Connect(r.Context(), user.ID, providerID, request.Token)
+	if err != nil {
+		s.recordActivity("integration.connect_failed", user.ID, "", "integration connection failed", map[string]any{"provider": providerID, "error": err.Error()})
+		http.Error(w, "token validation failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Return metadata only — never the secret/token
+	s.recordActivity("integration.connected", user.ID, "", "integration connected", map[string]any{"provider": providerID, "external_login": conn.ExternalLogin})
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"provider_id":         conn.ProviderID,
+		"external_account_id": conn.ExternalAccountID,
+		"external_login":      conn.ExternalLogin,
+		"account_type":        conn.AccountType,
+		"status":              conn.Status,
+		"revision":            conn.Revision,
+	})
+}
+
+func (s *Server) handleDisconnectIntegration(w http.ResponseWriter, r *http.Request, providerID string) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	if err := s.integrations.Disconnect(r.Context(), user.ID, providerID); err != nil {
+		s.recordActivity("integration.disconnect_failed", user.ID, "", "integration disconnect failed", map[string]any{"provider": providerID, "error": err.Error()})
+		s.writeStoreError(w, err)
+		return
+	}
+
+	s.recordActivity("integration.disconnected", user.ID, "", "integration disconnected", map[string]any{"provider": providerID})
+	s.writeJSON(w, http.StatusOK, map[string]string{"status": "disconnected"})
+}
+
+func (s *Server) handleAgentIntegration(w http.ResponseWriter, r *http.Request, agentID, providerID string) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	if r.Method != http.MethodPut {
+		methodNotAllowed(w, http.MethodPut)
+		return
+	}
+
+	// Verify ownership
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if agent.OwnerUserID != user.ID && user.Role != "admin" {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Verify connection exists for the agent owner (must have connected to provider first)
+	ownerID := agent.OwnerUserID
+	_, err = s.integrations.GetConnection(r.Context(), ownerID, providerID)
+	if err != nil {
+		http.Error(w, "no connection for provider, connect first", http.StatusBadRequest)
+		return
+	}
+
+	var request struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	ai, err := s.integrations.ToggleAgentIntegration(r.Context(), agentID, providerID, request.Enabled)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+
+	activityType := "integration.agent_enabled"
+	activityMsg := "agent integration enabled"
+	if !request.Enabled {
+		activityType = "integration.agent_disabled"
+		activityMsg = "agent integration disabled"
+	}
+	s.recordActivity(activityType, user.ID, agentID, activityMsg, map[string]any{"provider": providerID, "enabled": request.Enabled})
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id":    ai.AgentID,
+		"provider_id": ai.ProviderID,
+		"enabled":     ai.Enabled,
+		"revision":    ai.Revision,
+		"status":      ai.Status,
+	})
 }
 
 // --- Admin Users ---

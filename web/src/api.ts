@@ -57,6 +57,33 @@ export type AdminOverview = {
   };
 };
 
+export type IntegrationSummary = {
+  providers: IntegrationProvider[];
+};
+
+export type IntegrationProvider = {
+  provider_id: string;
+  name: string;
+  connected: boolean;
+  connection?: IntegrationConnection;
+  agent_bindings: AgentIntegrationBinding[];
+};
+
+export type IntegrationConnection = {
+  external_account_id: string;
+  external_login: string;
+  account_type: string;
+  status: string;
+  revision: number;
+};
+
+export type AgentIntegrationBinding = {
+  agent_id: string;
+  enabled: boolean;
+  revision: number;
+  status: string;
+};
+
 // ── Token helpers ──
 
 const TOKEN_KEY = 'shclop_token';
@@ -186,6 +213,38 @@ export async function stopAgent(id: string): Promise<Agent> {
   return apiFetch<Agent>(`/api/agents/${encodeURIComponent(id)}/stop`, {
     method: 'POST',
   });
+}
+
+// ── Integrations ──
+
+export async function listIntegrations(): Promise<IntegrationSummary> {
+  return apiFetch<IntegrationSummary>('/api/integrations');
+}
+
+export async function connectGitHub(token: string): Promise<IntegrationConnection> {
+  return apiFetch<IntegrationConnection>('/api/integrations/github/connection', {
+    method: 'PUT',
+    body: JSON.stringify({ token }),
+  });
+}
+
+export async function disconnectGitHub(): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>('/api/integrations/github/connection', {
+    method: 'DELETE',
+  });
+}
+
+export async function setAgentGitHubIntegration(
+  agentId: string,
+  enabled: boolean,
+): Promise<AgentIntegrationBinding> {
+  return apiFetch<AgentIntegrationBinding>(
+    `/api/agents/${encodeURIComponent(agentId)}/integrations/github`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    },
+  );
 }
 
 // ── Admin: Users ──

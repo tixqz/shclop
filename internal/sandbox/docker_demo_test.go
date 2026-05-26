@@ -36,6 +36,39 @@ func TestDockerDemoProviderBuildsLocalRuntimeCommand(t *testing.T) {
 	}
 }
 
+func TestDockerDemoProviderIncludesIntegrationEnv(t *testing.T) {
+	runner := &recordingRunner{}
+	provider := DockerDemoProvider{
+		Runner:      runner,
+		GatewayURL:  "ws://host.docker.internal:8080/runtime/ws",
+		ImagePrefix: "shclop-runtime",
+	}
+
+	lease, err := provider.Start(context.Background(), StartRequest{
+		AgentID:        "agent-1",
+		RuntimeToken:   "secret",
+		Runtime:        "openclaw",
+		IntegrationEnv: map[string]string{"GITHUB_TOKEN": "ghp_test_token_value"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.AgentID != "agent-1" || lease.Provider != "docker-demo" || lease.Runtime != "openclaw" {
+		t.Fatalf("unexpected lease: %#v", lease)
+	}
+	// Verify GITHUB_TOKEN is passed as a docker -e argument
+	found := false
+	for _, arg := range runner.args {
+		if arg == "GITHUB_TOKEN=ghp_test_token_value" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected GITHUB_TOKEN in docker args, got %#v", runner.args)
+	}
+}
+
 func TestDockerDemoProviderRejectsUnknownRuntime(t *testing.T) {
 	provider := DockerDemoProvider{Runner: &recordingRunner{}}
 	if _, err := provider.Start(context.Background(), StartRequest{AgentID: "agent-1", RuntimeToken: "secret", Runtime: "unknown"}); err == nil {

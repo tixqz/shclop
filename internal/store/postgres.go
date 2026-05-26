@@ -360,6 +360,118 @@ func (p *Postgres) UpsertLLMGatewaySettings(ctx context.Context, enabled bool, b
 	return s, nil
 }
 
+// --- Integrations: Connections ---
+
+func (p *Postgres) UpsertIntegrationConnection(ctx context.Context, connection domain.IntegrationConnection) (domain.IntegrationConnection, error) {
+	now := time.Now().UTC()
+	var c domain.IntegrationConnection
+	err := p.db.QueryRowContext(ctx,
+		`insert into integration_connections (provider_id, user_id, external_account_id, external_login, account_type, status, secret, revision, created_at, updated_at)
+		 values ($1, $2, $3, $4, $5, $6, $7, coalesce(nullif($8, 0), 1), $9, $9)
+		 on conflict (provider_id, user_id) do update set
+		   external_account_id = $3, external_login = $4, account_type = $5, status = $6, secret = $7,
+		   revision = integration_connections.revision + 1, updated_at = $9
+		 returning provider_id, user_id, external_account_id, external_login, account_type, status, secret, revision, created_at, updated_at`,
+		connection.ProviderID, connection.UserID, connection.ExternalAccountID, connection.ExternalLogin,
+		connection.AccountType, connection.Status, connection.Secret, connection.Revision, now,
+	).Scan(&c.ProviderID, &c.UserID, &c.ExternalAccountID, &c.ExternalLogin, &c.AccountType,
+		&c.Status, &c.Secret, &c.Revision, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return domain.IntegrationConnection{}, fmt.Errorf("upsert integration connection: %w", err)
+	}
+	return c, nil
+}
+
+func (p *Postgres) GetIntegrationConnection(ctx context.Context, userID, providerID string) (domain.IntegrationConnection, error) {
+	var c domain.IntegrationConnection
+	err := p.db.QueryRowContext(ctx,
+		`select provider_id, user_id, external_account_id, external_login, account_type, status, secret, revision, created_at, updated_at
+		 from integration_connections where user_id = $1 and provider_id = $2`,
+		userID, providerID,
+	).Scan(&c.ProviderID, &c.UserID, &c.ExternalAccountID, &c.ExternalLogin, &c.AccountType,
+		&c.Status, &c.Secret, &c.Revision, &c.CreatedAt, &c.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return domain.IntegrationConnection{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.IntegrationConnection{}, err
+	}
+	return c, nil
+}
+
+func (p *Postgres) DeleteIntegrationConnection(ctx context.Context, userID, providerID string) error {
+	_, err := p.db.ExecContext(ctx,
+		`delete from integration_connections where user_id = $1 and provider_id = $2`,
+		userID, providerID)
+	if err != nil {
+		return fmt.Errorf("delete integration connection: %w", err)
+	}
+	// Also cascade-delete agent integrations for this provider (even though
+	// we have no FK to agent_connections, clean up).
+	_, _ = p.db.ExecContext(ctx,
+		`delete from agent_integrations where provider_id = $1 and agent_id in (
+		   select id from agents where owner_user_id = $2
+		 )`, providerID, userID)
+	return nil
+}
+
+// --- Integrations: Agent Integrations ---
+
+func (p *Postgres) UpsertAgentIntegration(ctx context.Context, agentID, providerID string, enabled bool, revision int64, status string) (domain.AgentIntegration, error) {
+	now := time.Now().UTC()
+	var ai domain.AgentIntegration
+	err := p.db.QueryRowContext(ctx,
+		`insert into agent_integrations (agent_id, provider_id, enabled, revision, status, created_at, updated_at)
+		 values ($1, $2, $3, coalesce(nullif($4, 0), 1), $5, $6, $6)
+		 on conflict (agent_id, provider_id) do update set
+		   enabled = $3, revision = agent_integrations.revision + 1, status = $5, updated_at = $6
+		 returning agent_id, provider_id, enabled, revision, status, created_at, updated_at`,
+		agentID, providerID, enabled, revision, status, now,
+	).Scan(&ai.AgentID, &ai.ProviderID, &ai.Enabled, &ai.Revision, &ai.Status, &ai.CreatedAt, &ai.UpdatedAt)
+	if err != nil {
+		return domain.AgentIntegration{}, fmt.Errorf("upsert agent integration: %w", err)
+	}
+	return ai, nil
+}
+
+func (p *Postgres) ListAgentIntegrations(ctx context.Context, agentID string) ([]domain.AgentIntegration, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`select agent_id, provider_id, enabled, revision, status, created_at, updated_at
+		 from agent_integrations where agent_id = $1 order by provider_id asc`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.AgentIntegration
+	for rows.Next() {
+		var ai domain.AgentIntegration
+		if err := rows.Scan(&ai.AgentID, &ai.ProviderID, &ai.Enabled, &ai.Revision, &ai.Status, &ai.CreatedAt, &ai.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, ai)
+	}
+	if out == nil {
+		return []domain.AgentIntegration{}, nil
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) GetAgentIntegration(ctx context.Context, agentID, providerID string) (domain.AgentIntegration, error) {
+	var ai domain.AgentIntegration
+	err := p.db.QueryRowContext(ctx,
+		`select agent_id, provider_id, enabled, revision, status, created_at, updated_at
+		 from agent_integrations where agent_id = $1 and provider_id = $2`,
+		agentID, providerID,
+	).Scan(&ai.AgentID, &ai.ProviderID, &ai.Enabled, &ai.Revision, &ai.Status, &ai.CreatedAt, &ai.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return domain.AgentIntegration{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.AgentIntegration{}, err
+	}
+	return ai, nil
+}
+
 // --- Bootstrap ---
 
 func (p *Postgres) BootstrapAdmin(ctx context.Context, username, passwordHash string) error {

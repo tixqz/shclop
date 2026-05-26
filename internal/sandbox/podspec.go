@@ -18,6 +18,10 @@ type AgentPodRequest struct {
 	LLMGatewayBaseURL   string
 	LLMModel            string
 	LLMGatewaySecretRef *SecretKeyRef
+	// IntegrationEnv contains additional environment variables from
+	// integrations (e.g. GITHUB_TOKEN). These are injected into the
+	// container spec as plain env vars.
+	IntegrationEnv map[string]string
 }
 
 type SecretKeyRef struct {
@@ -90,6 +94,10 @@ func BuildAgentPodSpec(req AgentPodRequest) AgentPodSpec {
 	}
 	if req.LLMModel != "" {
 		env["LLM_GATEWAY_MODEL"] = req.LLMModel
+	}
+
+	for k, v := range req.IntegrationEnv {
+		env[k] = v
 	}
 
 	var envFrom []EnvFromSource

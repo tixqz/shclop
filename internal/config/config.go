@@ -41,6 +41,9 @@ type Config struct {
 	// Bootstrap admin
 	BootstrapAdminUsername string
 
+	// Integrations
+	IntegrationEncryptionKey string
+
 	// Observability
 	GrafanaURL string
 }
@@ -80,6 +83,9 @@ func Default() Config {
 
 		// Bootstrap admin
 		BootstrapAdminUsername: env("SHCLOP_BOOTSTRAP_ADMIN_USERNAME", "admin"),
+
+		// Integrations
+		IntegrationEncryptionKey: os.Getenv("SHCLOP_INTEGRATION_ENCRYPTION_KEY"),
 
 		// Observability
 		GrafanaURL: os.Getenv("SHCLOP_GRAFANA_URL"),

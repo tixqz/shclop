@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/mipopov/shclop/internal/config"
+	"github.com/mipopov/shclop/internal/integrations"
 )
 
 func TestHealthz(t *testing.T) {
@@ -882,6 +883,303 @@ func TestStopAgentRevokesRuntimeToken(t *testing.T) {
 	if exists {
 		t.Fatal("expected runtime token to be deleted after stop")
 	}
+}
+
+// --- Integrations ---
+
+func TestIntegrations_ListReturnsProviders(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	resp := doJSON(t, server, http.MethodGet, "/api/integrations", nil, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, resp.Code, resp.Body.String())
+	}
+
+	body := resp.Body.Bytes()
+	providers := assertJSONArray(t, body, "providers")
+	if len(providers) == 0 {
+		t.Fatal("expected at least one provider")
+	}
+	found := false
+	for _, p := range providers {
+		if p["provider_id"] == "github" {
+			found = true
+			if p["name"] != "GitHub" {
+				t.Fatalf("expected name GitHub, got %v", p["name"])
+			}
+			if p["connected"] != false {
+				t.Fatal("expected connected=false initially")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected github provider in list")
+	}
+}
+
+func TestIntegrations_ConnectAndDisconnectGitHub(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	// Start a test GitHub server that returns 200 for "ghp_test_valid" and 401 for anything else.
+	githubCalled := false
+	githubServer := newTestGitHubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		githubCalled = true
+		auth := r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		if auth == "Bearer ghp_test_valid" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"login":"testuser","id":12345,"type":"User"}`))
+		} else {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"message":"bad credentials"}`))
+		}
+	})
+	defer githubServer.Close()
+
+	// Override the GitHub provider with our test server
+	server.integrations.RegisterProvider(newTestGitHubProvider(t, githubServer.URL))
+
+	// Connect with valid token
+	connectResp := doJSON(t, server, http.MethodPut, "/api/integrations/github/connection", map[string]string{
+		"token": "ghp_test_valid",
+	}, token)
+	if connectResp.Code != http.StatusOK {
+		t.Fatalf("expected connect status %d, got %d: %s", http.StatusOK, connectResp.Code, connectResp.Body.String())
+	}
+	if !githubCalled {
+		t.Fatal("expected GitHub API to be called")
+	}
+
+	body := connectResp.Body.Bytes()
+	assertJSONField(t, body, "provider_id", "github")
+	assertJSONField(t, body, "external_login", "testuser")
+	assertJSONField(t, body, "external_account_id", "12345")
+	assertJSONField(t, body, "account_type", "User")
+	assertJSONField(t, body, "status", "connected")
+
+	// Verify token is NOT returned
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, hasToken := decoded["token"]; hasToken {
+		t.Fatal("response must not contain the token")
+	}
+	if _, hasSecret := decoded["secret"]; hasSecret {
+		t.Fatal("response must not contain the secret")
+	}
+
+	// Connect with invalid token (should fail validation, not save/update)
+	githubCalled = false
+	failResp := doJSON(t, server, http.MethodPut, "/api/integrations/github/connection", map[string]string{
+		"token": "ghp_bad",
+	}, token)
+	if failResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for invalid token, got %d: %s", failResp.Code, failResp.Body.String())
+	}
+
+	// Verify the previous valid connection was NOT overwritten by the failed attempt
+	listResp := doJSON(t, server, http.MethodGet, "/api/integrations", nil, token)
+	listBody := listResp.Body.Bytes()
+	providers := assertJSONArray(t, listBody, "providers")
+	foundConnected := false
+	for _, p := range providers {
+		if p["provider_id"] == "github" {
+			if p["connected"] == true {
+				foundConnected = true
+				// The connection should still have the original login (testuser), not reflect the failed attempt
+				if conn, ok := p["connection"].(map[string]any); ok {
+					if login, ok := conn["external_login"].(string); ok && login != "testuser" {
+						t.Fatalf("expected preserved external_login testuser, got %q", login)
+					}
+				}
+			}
+		}
+	}
+	if !foundConnected {
+		t.Fatal("expected previous valid connection to still be present after failed validation attempt")
+	}
+
+	// Disconnect
+	disconnectResp := doJSON(t, server, http.MethodDelete, "/api/integrations/github/connection", nil, token)
+	if disconnectResp.Code != http.StatusOK {
+		t.Fatalf("expected disconnect status %d, got %d: %s", http.StatusOK, disconnectResp.Code, disconnectResp.Body.String())
+	}
+
+	// Verify disconnected
+	listResp2 := doJSON(t, server, http.MethodGet, "/api/integrations", nil, token)
+	listBody2 := listResp2.Body.Bytes()
+	providers2 := assertJSONArray(t, listBody2, "providers")
+	for _, p := range providers2 {
+		if p["provider_id"] == "github" {
+			if p["connected"] == true {
+				t.Fatal("expected connected=false after disconnect")
+			}
+		}
+	}
+}
+
+func TestIntegrations_RequiresAuth(t *testing.T) {
+	server := newTestServer()
+
+	// All integration endpoints should require auth
+	endpoints := []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{http.MethodGet, "/api/integrations", nil},
+		{http.MethodPut, "/api/integrations/github/connection", map[string]string{"token": "test"}},
+		{http.MethodDelete, "/api/integrations/github/connection", nil},
+	}
+
+	for _, ep := range endpoints {
+		resp := doJSON(t, server, ep.method, ep.path, ep.body, "")
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 for %s %s, got %d", ep.method, ep.path, resp.Code)
+		}
+	}
+}
+
+func TestIntegrations_AgentToggleEnforceOwnership(t *testing.T) {
+	server := newTestServer()
+	adminToken := loginAsAdmin(t, server)
+
+	// Create a non-admin user via admin API
+	createdUser := doJSON(t, server, http.MethodPost, "/api/admin/users", map[string]string{
+		"username": "alice",
+		"password": "secret",
+		"role":     "user",
+	}, adminToken)
+	if createdUser.Code != http.StatusCreated {
+		t.Fatalf("create user: %d: %s", createdUser.Code, createdUser.Body.String())
+	}
+	aliceToken := loginAs(t, server, "alice", "secret")
+
+	// Create another user for cross-ownership test
+	createdBob := doJSON(t, server, http.MethodPost, "/api/admin/users", map[string]string{
+		"username": "bob",
+		"password": "secret",
+		"role":     "user",
+	}, adminToken)
+	if createdBob.Code != http.StatusCreated {
+		t.Fatalf("create bob: %d: %s", createdBob.Code, createdBob.Body.String())
+	}
+	bobToken := loginAs(t, server, "bob", "secret")
+
+	// Create an agent as alice
+	created := doJSON(t, server, http.MethodPost, "/api/agents", map[string]any{
+		"name":    "AliceAgent",
+		"runtime": "nanoclaw",
+		"model":   "",
+	}, aliceToken)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create agent: %d: %s", created.Code, created.Body.String())
+	}
+	agentID := assertJSONField(t, created.Body.Bytes(), "id", "")
+
+	// Connect GitHub as alice (using test server)
+	githubServer := newTestGitHubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"login":"alice","id":999,"type":"User"}`))
+	})
+	defer githubServer.Close()
+	server.integrations.RegisterProvider(newTestGitHubProvider(t, githubServer.URL))
+
+	connectResp := doJSON(t, server, http.MethodPut, "/api/integrations/github/connection", map[string]string{
+		"token": "ghp_alice_valid",
+	}, aliceToken)
+	if connectResp.Code != http.StatusOK {
+		t.Fatalf("connect: %d: %s", connectResp.Code, connectResp.Body.String())
+	}
+
+	// Admin tries to toggle alice's agent integration (admin should be allowed)
+	adminToggle := doJSON(t, server, http.MethodPut, "/api/agents/"+agentID+"/integrations/github", map[string]bool{
+		"enabled": true,
+	}, adminToken)
+	if adminToggle.Code != http.StatusOK {
+		t.Fatalf("admin toggle: %d: %s", adminToggle.Code, adminToggle.Body.String())
+	}
+
+	// Bob should NOT be able to toggle alice's agent
+	bobToggle := doJSON(t, server, http.MethodPut, "/api/agents/"+agentID+"/integrations/github", map[string]bool{
+		"enabled": true,
+	}, bobToken)
+	if bobToggle.Code != http.StatusNotFound {
+		t.Fatalf("expected bob's toggle to be 404 (not found/not owner), got %d", bobToggle.Code)
+	}
+
+	// alice can toggle her own agent
+	aliceToggle := doJSON(t, server, http.MethodPut, "/api/agents/"+agentID+"/integrations/github", map[string]bool{
+		"enabled": true,
+	}, aliceToken)
+	if aliceToggle.Code != http.StatusOK {
+		t.Fatalf("alice toggle: %d: %s", aliceToggle.Code, aliceToggle.Body.String())
+	}
+	body := aliceToggle.Body.Bytes()
+	assertJSONField(t, body, "agent_id", agentID)
+	assertJSONField(t, body, "provider_id", "github")
+	assertJSONField(t, body, "status", "active")
+	if v := assertJSONField(t, body, "enabled", ""); v != "true" {
+		// Check bool field
+		var decoded map[string]any
+		json.Unmarshal(body, &decoded)
+		if enabled, ok := decoded["enabled"].(bool); !ok || !enabled {
+			t.Fatalf("expected enabled=true, got %#v", decoded["enabled"])
+		}
+	}
+
+	// Toggle off
+	aliceToggleOff := doJSON(t, server, http.MethodPut, "/api/agents/"+agentID+"/integrations/github", map[string]bool{
+		"enabled": false,
+	}, aliceToken)
+	if aliceToggleOff.Code != http.StatusOK {
+		t.Fatalf("alice toggle off: %d: %s", aliceToggleOff.Code, aliceToggleOff.Body.String())
+	}
+}
+
+func TestIntegrations_AgentToggleRequiresConnection(t *testing.T) {
+	server := newTestServer()
+	token := loginAsAdmin(t, server)
+
+	// Create agent
+	created := doJSON(t, server, http.MethodPost, "/api/agents", map[string]any{
+		"name":    "NoConnAgent",
+		"runtime": "nanoclaw",
+	}, token)
+	agentID := assertJSONField(t, created.Body.Bytes(), "id", "")
+
+	// Try to toggle without a connection first
+	toggleResp := doJSON(t, server, http.MethodPut, "/api/agents/"+agentID+"/integrations/github", map[string]bool{
+		"enabled": true,
+	}, token)
+	if toggleResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request (no connection), got %d: %s", toggleResp.Code, toggleResp.Body.String())
+	}
+}
+
+// testGitHubServer creates an httptest.Server that responds to /user.
+func newTestGitHubServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request)) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user" {
+			handler(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+}
+
+func newTestGitHubProvider(t *testing.T, baseURL string) *integrations.GitHubProvider {
+	t.Helper()
+	return integrations.NewGitHubProvider(integrations.GitHubProviderConfig{
+		BaseURL:    baseURL,
+		HTTPClient: &http.Client{},
+	})
 }
 
 // --- Helpers ---

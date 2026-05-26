@@ -124,6 +124,24 @@ func containsAny(s, chars string) bool {
 	return false
 }
 
+func TestAgentPodSpecIncludesIntegrationEnv(t *testing.T) {
+	spec := BuildAgentPodSpec(AgentPodRequest{
+		AgentID:        "agent-1",
+		Image:          "img:latest",
+		Runtime:        "nanoclaw",
+		GatewayURL:     "ws://test:8080/ws",
+		SecretRef:      SecretRef{Name: "secret", MountPath: "/var/run/shclop/token"},
+		IntegrationEnv: map[string]string{"GITHUB_TOKEN": "ghp_test_token_value"},
+	})
+	if spec.Container.Env["GITHUB_TOKEN"] != "ghp_test_token_value" {
+		t.Fatalf("expected GITHUB_TOKEN env var, got %#v", spec.Container.Env)
+	}
+	// Verify other env vars are still present
+	if spec.Container.Env["SHCLOP_GATEWAY_URL"] != "ws://test:8080/ws" {
+		t.Fatalf("expected gateway URL to be preserved, got %q", spec.Container.Env["SHCLOP_GATEWAY_URL"])
+	}
+}
+
 func TestBuildWorkspacePVC(t *testing.T) {
 	pvc, err := BuildWorkspacePVC("agent-1", "sandbox-1", "fast-ssd", "")
 	if err != nil {

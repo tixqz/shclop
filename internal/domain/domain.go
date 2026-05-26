@@ -2,6 +2,65 @@ package domain
 
 import "time"
 
+// IntegrationConnection represents a user's connection to an external provider
+// (e.g., GitHub). The Secret field contains the encrypted credential token.
+type IntegrationConnection struct {
+	ProviderID        string    `json:"provider_id"`
+	UserID            string    `json:"user_id"`
+	ExternalAccountID string    `json:"external_account_id"` // e.g. GitHub user ID
+	ExternalLogin     string    `json:"external_login"`      // e.g. GitHub login/username
+	AccountType       string    `json:"account_type"`        // e.g. "User" or "Organization"
+	Status            string    `json:"status"`              // "connected" or "error"
+	Secret            string    `json:"-"`                   // encrypted token; never serialized
+	Revision          int64     `json:"revision"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+// AgentIntegration links an agent to an integration provider's connection.
+type AgentIntegration struct {
+	AgentID    string    `json:"agent_id"`
+	ProviderID string    `json:"provider_id"`
+	Enabled    bool      `json:"enabled"`
+	Revision   int64     `json:"revision"`
+	Status     string    `json:"status"` // "active", "error", "disabled"
+	UpdatedAt  time.Time `json:"updated_at"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// IntegrationSummary is the response shape returned by the integrations API.
+// It never includes secrets/tokens.
+type IntegrationSummary struct {
+	Providers []ProviderSummary `json:"providers"`
+}
+
+// ProviderSummary describes an available integration provider and the current
+// user's connection state.
+type ProviderSummary struct {
+	ProviderID    string                  `json:"provider_id"`
+	Name          string                  `json:"name"`
+	Connected     bool                    `json:"connected"`
+	Connection    *ConnectionMetadata     `json:"connection,omitempty"`
+	AgentBindings []AgentBindingSummary   `json:"agent_bindings"`
+}
+
+// ConnectionMetadata holds non-sensitive details about a connection.
+type ConnectionMetadata struct {
+	ExternalAccountID string `json:"external_account_id"`
+	ExternalLogin     string `json:"external_login"`
+	AccountType       string `json:"account_type"`
+	Status            string `json:"status"`
+	Revision          int64  `json:"revision"`
+}
+
+// AgentBindingSummary is the per-agent integration toggle state.
+type AgentBindingSummary struct {
+	AgentID  string `json:"agent_id"`
+	Enabled  bool   `json:"enabled"`
+	Revision int64  `json:"revision"`
+	Status   string `json:"status"`
+}
+
 type User struct {
 	ID        string    `json:"id"`
 	Username  string    `json:"username"`
