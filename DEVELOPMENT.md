@@ -2,6 +2,32 @@
 
 This file describes local development and verification. Production behavior is documented in [`README.md`](README.md): production uses PostgreSQL and the Kubernetes runtime provider with Kata runtime pods.
 
+## Deployment workflow
+
+The deploy workflow is triggered either manually (workflow_dispatch) or automatically on successful completion of the "Publish Images" workflow on the `prod` branch. It runs in the `production` GitHub environment.
+
+### GitHub secrets required
+
+| Secret | Purpose |
+|---|---|
+| `DEPLOY_HOST` | Hostname or IP of the target deployment server |
+| `DEPLOY_USER` | SSH user for transfer and remote commands |
+| `DEPLOY_SSH_KEY` | Private SSH key for authentication |
+
+The deploy user on the server must have sudo access to run `/usr/local/sbin/shclop-deploy` (which is `scripts/deploy.sh` installed at that path). The deploy script requires:
+
+- `helm` and `kubectl` binaries in PATH
+- KUBECONFIG pointing to a valid k3s cluster config (defaults to `/etc/rancher/k3s/k3s.yaml`)
+- The Helm chart at `charts/shclop` relative to the extracted release directory
+
+### Flow
+
+1. CI builds and pushes container images via "Publish Images" (or the workflow is triggered manually).
+2. Deploy workflow computes the image tag (`sha-<commit>` for automated runs, or the manually supplied tag).
+3. A tarball of the repository (excluding `.git`, ignored directories, `node_modules`, `web/dist`) is created and copied to the deploy host via SCP.
+4. On the deploy host, the tarball is extracted and `sudo /usr/local/sbin/shclop-deploy <tag> <release-dir>` is executed.
+5. The deploy script runs `helm upgrade --install` with production values, waits for rollout, and displays running pods.
+
 ## Local backend
 
 For development and tests, use the in-memory store and mock provider:

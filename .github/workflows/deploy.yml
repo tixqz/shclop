@@ -1,0 +1,99 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Image tag to deploy (e.g. sha-abc123 or v0.1.0)
+        required: true
+        type: string
+
+  workflow_run:
+    workflows: ["Publish Images"]
+    types:
+      - completed
+    branches:
+      - prod
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Compute image tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            SHA="${{ github.event.workflow_run.head_sha }}"
+            echo "tag=sha-${SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: >-
+            ${{
+              github.event_name == 'workflow_run'
+                && github.event.workflow_run.head_sha
+                || github.ref
+            }}
+
+      - name: Create release tarball
+        run: |
+          tar --exclude='.git' \
+            --exclude='.worktrees' \
+            --exclude='.firecrawl' \
+            --exclude='.bootstrap' \
+            --exclude='.scratch' \
+            --exclude='.slim' \
+            --exclude='dogfood-output' \
+            --exclude='temp' \
+            --exclude='config' \
+            --exclude='node_modules' \
+            --exclude='*/node_modules' \
+            --exclude='web/dist' \
+            --exclude='bin' \
+            -czf /tmp/shclop-release.tgz .
+
+      - name: Copy tarball to deploy host
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          scp -o StrictHostKeyChecking=no \
+            -i ~/.ssh/deploy_key \
+            /tmp/shclop-release.tgz \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/home/${DEPLOY_USER}/shclop-release.tgz"
+
+      - name: Extract and deploy on remote host
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+            -i ~/.ssh/deploy_key \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "
+              set -e
+              rm -rf /home/${DEPLOY_USER}/shclop-release
+              mkdir -p /home/${DEPLOY_USER}/shclop-release
+              tar -xzf /home/${DEPLOY_USER}/shclop-release.tgz \
+                -C /home/${DEPLOY_USER}/shclop-release
+              sudo /usr/local/sbin/shclop-deploy \
+                '${{ steps.tag.outputs.tag }}' \
+                /home/${DEPLOY_USER}/shclop-release
+            "
