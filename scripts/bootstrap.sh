@@ -1248,6 +1248,10 @@ image:
 service:
   type: ClusterIP
   port: 4000
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "4000"
+    prometheus.io/path: "/metrics/"
 
 ingress:
   enabled: false
@@ -1312,6 +1316,10 @@ proxy_config:
         api_key: os.environ/OPENROUTER_API_KEY
   general_settings:
     master_key: os.environ/PROXY_MASTER_KEY
+  litellm_settings:
+    require_auth_for_metrics_endpoint: false
+    callbacks:
+      - prometheus
 YAML
 
   helm upgrade --install "$LITELLM_RELEASE_NAME" oci://ghcr.io/berriai/litellm-helm \

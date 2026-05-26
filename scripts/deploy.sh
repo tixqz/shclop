@@ -59,6 +59,27 @@ fi
 # ── Helm upgrade ────────────────────────────────────────────────
 echo "==> Deploying shclop tag=${TAG} from ${RELEASE_DIR}..."
 
+echo "==> Ensuring node-exporter is installed..."
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts/ 2>/dev/null || true
+helm repo update prometheus-community 2>/dev/null || true
+helm upgrade --install node-exporter prometheus-community/prometheus-node-exporter \
+  --namespace monitoring --create-namespace \
+  --set fullnameOverride=node-exporter \
+  --set-string 'service.annotations.prometheus\.io/scrape=true' \
+  --set-string 'service.annotations.prometheus\.io/port=9100' \
+  --wait
+
+echo "==> Ensuring LiteLLM Prometheus metrics are enabled..."
+helm upgrade --install litellm oci://ghcr.io/berriai/litellm-helm \
+  --namespace default --create-namespace \
+  --reuse-values \
+  --set 'proxy_config.litellm_settings.callbacks[0]=prometheus' \
+  --set 'proxy_config.litellm_settings.require_auth_for_metrics_endpoint=false' \
+  --set-string 'service.annotations.prometheus\.io/scrape=true' \
+  --set-string 'service.annotations.prometheus\.io/port=4000' \
+  --set-string 'service.annotations.prometheus\.io/path=/metrics/' \
+  --wait
+
 helm upgrade --install shclop "$CHART_DIR" \
   --namespace default --create-namespace \
   --set "image.repository=ghcr.io/tixqz/shclop" \
