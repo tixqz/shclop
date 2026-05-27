@@ -100,3 +100,28 @@ jobs:
                 '${{ steps.tag.outputs.tag }}' \
                 /home/${DEPLOY_USER}/shclop-release
             "
+
+      - name: Provision Grafana dashboards
+        env:
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          GRAFANA_URL: https://grafana.178.62.240.51.nip.io
+        run: |
+          if [[ -z "${GRAFANA_ADMIN_PASSWORD}" ]]; then
+            echo "==> GRAFANA_ADMIN_PASSWORD secret not set; skipping dashboard provisioning."
+            exit 0
+          fi
+          echo "==> Provisioning Grafana dashboards..."
+          for dashboard in monitoring/grafana-dashboards/*.json; do
+            echo "    importing $(basename "$dashboard")"
+            python3 - "$dashboard" <<'PY' | curl -fsS -k \
+              -u "admin:${GRAFANA_ADMIN_PASSWORD}" \
+              -H 'Content-Type: application/json' \
+              -X POST "${GRAFANA_URL}/api/dashboards/db" \
+              --data-binary @- > /dev/null
+          import json, sys
+          with open(sys.argv[1]) as f:
+              d = json.load(f)
+          print(json.dumps({"dashboard": d, "overwrite": True, "folderId": 0}))
+          PY
+          done
+          echo "==> Grafana dashboards provisioned."
