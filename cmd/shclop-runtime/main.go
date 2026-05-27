@@ -61,7 +61,7 @@ func main() {
 		}
 		logger.Info("task received", "agent_id", *agentID, "runtime", *runtimeName, "message_id", task.MessageID)
 		taskCtx, cancel := context.WithCancel(context.Background())
-		events, err := adapterForRuntime(*runtimeName).Run(taskCtx, claw.Task{Text: taskText(task.Payload)})
+		events, err := adapterForRuntime(*runtimeName).Run(taskCtx, claw.Task{Text: taskText(task.Payload), SessionID: task.SessionID})
 		if err != nil {
 			cancel()
 			if writeErr := conn.WriteJSON(clawEventToEnvelope(claw.Event{Type: claw.EventError, Err: err}, task, 1)); writeErr != nil {

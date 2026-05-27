@@ -22,9 +22,13 @@ func (a NanoclawAdapter) Run(ctx context.Context, task Task) (<-chan Event, erro
 	if err := writeNanoclawConfig(); err != nil {
 		return nil, fmt.Errorf("nanoclaw: write config: %w", err)
 	}
+	args := []string{"agent", "-m", task.Text}
+	if task.SessionID != "" {
+		args = append(args, "--session", task.SessionID)
+	}
 	return SubprocessAdapter{
 		Binary: "nano-claw",
-		Args:   []string{"agent", "-m", task.Text},
+		Args:   args,
 		Env:    nanoclawEnv(),
 	}.Run(ctx, task)
 }
@@ -33,9 +37,13 @@ func (a OpenclawAdapter) Run(ctx context.Context, task Task) (<-chan Event, erro
 	if err := writeNanoclawConfig(); err != nil {
 		return nil, fmt.Errorf("openclaw: write config: %w", err)
 	}
+	args := []string{"agent", "--message", task.Text}
+	if task.SessionID != "" {
+		args = append(args, "--session", task.SessionID)
+	}
 	return SubprocessAdapter{
 		Binary: "openclaw",
-		Args:   []string{"agent", "--message", task.Text},
+		Args:   args,
 		Env:    nanoclawEnv(),
 	}.Run(ctx, task)
 }

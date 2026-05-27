@@ -88,6 +88,7 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const disconnectRef = useRef<(() => void) | null>(null);
+  const chatSessionIdRef = useRef<string>(crypto.randomUUID());
 
   // admin
   const [adminTab, setAdminTab] = useState<AdminTab>('overview');
@@ -347,7 +348,7 @@ export default function App() {
       return;
     }
     if (chatStatus === 'connected' && wsRef.current) {
-      wsRef.current.send(JSON.stringify({ text: chatText.trim() }));
+      wsRef.current.send(JSON.stringify({ text: chatText.trim(), session_id: chatSessionIdRef.current }));
       setChatMessages((prev) => [...prev, { type: 'user', text: chatText.trim() }]);
       setChatText('');
     }
@@ -369,7 +370,7 @@ export default function App() {
 
     ws.onopen = () => {
       setChatStatus('connected');
-      ws.send(JSON.stringify({ text }));
+      ws.send(JSON.stringify({ text, session_id: chatSessionIdRef.current }));
     };
 
     ws.onmessage = (msg) => {
@@ -732,6 +733,7 @@ export default function App() {
                       wsRef.current = null;
                       setChatMessages([]);
                       setChatStatus('idle');
+                      chatSessionIdRef.current = crypto.randomUUID();
                     }}
                   >
                     <div className="agent-card-head">

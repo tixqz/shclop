@@ -2,7 +2,10 @@ package claw
 
 import "context"
 
-type Task struct{ Text string }
+type Task struct {
+	Text      string
+	SessionID string
+}
 
 type EventType string
 
