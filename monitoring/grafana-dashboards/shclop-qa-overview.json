@@ -1,15 +1,94 @@
 {
   "uid": "shclop-qa-overview",
   "title": "Shclop QA Overview",
-  "tags": ["shclop", "qa"],
+  "tags": [
+    "shclop",
+    "qa"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "10s",
-  "time": {"from": "now-1h", "to": "now"},
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "panels": [
-    {"title": "Backend up", "type": "stat", "datasource": "Prometheus", "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0}, "targets": [{"expr": "up{service=\"shclop-backend\"}", "refId": "A"}]},
-    {"title": "HTTP requests/sec", "type": "timeseries", "datasource": "Prometheus", "gridPos": {"h": 6, "w": 9, "x": 6, "y": 0}, "targets": [{"expr": "sum by (path,status) (rate(shclop_http_requests_total[5m]))", "refId": "A"}]},
-    {"title": "Runtime pod failures", "type": "timeseries", "datasource": "Prometheus", "gridPos": {"h": 6, "w": 9, "x": 15, "y": 0}, "targets": [{"expr": "sum(rate(shclop_runtime_pod_failures_total[5m])) or vector(0)", "refId": "A"}]},
-    {"title": "Recent Shclop logs", "type": "logs", "datasource": "Loki", "gridPos": {"h": 8, "w": 24, "x": 0, "y": 6}, "targets": [{"expr": "{job=\"fluentbit\"} |= \"shclop\"", "refId": "A"}]}
+    {
+      "title": "Backend up",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "efncoh2xlkhs0e"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "up{service=\"shclop-backend\"}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "HTTP requests/sec",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "efncoh2xlkhs0e"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 9,
+        "x": 6,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum by (path,status) (rate(shclop_http_requests_total[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Runtime pod failures",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "efncoh2xlkhs0e"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 9,
+        "x": 15,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(shclop_runtime_pod_failures_total[5m])) or vector(0)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Recent Shclop logs",
+      "type": "logs",
+      "datasource": "Loki",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "expr": "{job=\"fluentbit\"} |= \"shclop\"",
+          "refId": "A"
+        }
+      ]
+    }
   ]
 }
