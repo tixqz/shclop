@@ -36,6 +36,9 @@ type Page = 'agents' | 'integrations' | 'admin';
 
 type AdminTab = 'overview' | 'users' | 'models' | 'gateway';
 
+type IntegrationsView = 'list' | 'add' | 'detail';
+type AddStep = 'picker' | 'form';
+
 /* ── helpers ── */
 
 function timeAgo(iso: string): string {
@@ -90,6 +93,9 @@ export default function App() {
   const [integrationToken, setIntegrationToken] = useState('');
   const [integrationSaving, setIntegrationSaving] = useState(false);
   const [integrationAction, setIntegrationAction] = useState('');
+  const [integrationsView, setIntegrationsView] = useState<IntegrationsView>('list');
+  const [addStep, setAddStep] = useState<AddStep>('picker');
+  const [detailProviderId, setDetailProviderId] = useState('');
 
   // chat
   const [chatText, setChatText] = useState('');
@@ -162,12 +168,19 @@ export default function App() {
     }
   }, [selectedAgentId, chatStorageKey]);
 
-  // Save chat history to localStorage when messages change
+  // Keep a ref in sync so the save effect never fires on agent switch
+  const selectedAgentIdSaveRef = useRef<string>('');
   useEffect(() => {
-    if (!selectedAgentId) return;
-    if (chatMessages.length === 0) return;
-    localStorage.setItem(chatStorageKey(selectedAgentId), JSON.stringify(chatMessages));
-  }, [chatMessages, selectedAgentId, chatStorageKey]);
+    selectedAgentIdSaveRef.current = selectedAgentId;
+  }, [selectedAgentId]);
+
+  // Save chat history to localStorage — only fires when messages change
+  useEffect(() => {
+    const agentId = selectedAgentIdSaveRef.current;
+    if (!agentId || chatMessages.length === 0) return;
+    localStorage.setItem(chatStorageKey(agentId), JSON.stringify(chatMessages));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatMessages, chatStorageKey]);
 
   // Close integrations panel on outside click
   useEffect(() => {
@@ -200,12 +213,11 @@ export default function App() {
       });
   }, [token]);
 
-  // On mount, if we have a token, load agents, available models and integration status
+  // On mount, if we have a token, load agents and available models
   useEffect(() => {
     if (!token) return;
     loadAgents();
     loadAvailableModels();
-    loadIntegrations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -382,8 +394,9 @@ export default function App() {
 
   useEffect(() => {
     if (token && page === 'integrations') {
+      setIntegrationsView('list');
       loadIntegrations();
-      loadAgents(); // ensure fresh agent list for per-agent bindings
+      loadAgents();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, page]);
@@ -1468,165 +1481,271 @@ export default function App() {
         <div className="page-layout page-layout-single">
           <div className="panel panel-main">
 
-            {/* GitHub integration card */}
-            <div className="card card-detail">
-              <div className="detail-head">
-                <div>
-                  <h2>GitHub Integration</h2>
+            {/* ── List view ── */}
+            {integrationsView === 'list' ? (
+              <>
+                <div className="integrations-page-head">
+                  <h2>Integrations</h2>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={() => { setIntegrationsView('add'); setAddStep('picker'); }}
+                  >
+                    Add integration
+                  </button>
                 </div>
-                {!integrationsLoading ? (
-                  githubProvider?.connected ? (
-                    <span className="badge badge-active">Connected</span>
-                  ) : (
-                    <span className="badge badge-disabled">Disconnected</span>
-                  )
-                ) : null}
-              </div>
 
-              {integrationsLoading ? (
-                <div className="field-loading" style={{ marginTop: 12 }}>Loading integrations…</div>
-              ) : githubProvider?.connected && githubProvider?.connection ? (
-                <>
-                  {/* Connection details */}
-                  <div className="integration-details">
-                    <div className="integration-detail-item">
-                      <span className="integration-detail-label">GitHub Login</span>
-                      <span className="integration-detail-value">{githubProvider.connection.external_login}</span>
-                    </div>
-                    <div className="integration-detail-item">
-                      <span className="integration-detail-label">Account Type</span>
-                      <span className="integration-detail-value">{githubProvider.connection.account_type}</span>
-                    </div>
-                    <div className="integration-detail-item">
-                      <span className="integration-detail-label">Status</span>
-                      <span className="integration-detail-value">{githubProvider.connection.status}</span>
-                    </div>
-                    <div className="integration-detail-item">
-                      <span className="integration-detail-label">Revision</span>
-                      <span className="integration-detail-value">{githubProvider.connection.revision}</span>
+                {integrationsLoading ? (
+                  <div className="field-loading" style={{ padding: '20px 0' }}>Loading integrations…</div>
+                ) : integrationProviders.filter((p) => p.connected).length === 0 ? (
+                  <div className="card card-detail">
+                    <div className="integrations-empty-state">
+                      <div className="integrations-empty-icon">
+                        <svg width="32" height="32" viewBox="0 0 16 16" fill="currentColor" opacity="0.3">
+                          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                        </svg>
+                      </div>
+                      <p>No integrations connected yet.</p>
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => { setIntegrationsView('add'); setAddStep('picker'); }}
+                      >
+                        Connect your first integration
+                      </button>
                     </div>
                   </div>
+                ) : (
+                  <div className="integration-cards-list">
+                    {integrationProviders.filter((p) => p.connected).map((provider) => (
+                      <div
+                        key={provider.provider_id}
+                        className="integration-card"
+                        onClick={() => { setDetailProviderId(provider.provider_id); setIntegrationsView('detail'); }}
+                      >
+                        <div className="integration-card-icon integration-card-icon-github">
+                          <svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                          </svg>
+                        </div>
+                        <div className="integration-card-body">
+                          <div className="integration-card-name">{provider.name}</div>
+                          {provider.connection ? (
+                            <div className="integration-card-sub">{provider.connection.external_login}</div>
+                          ) : null}
+                        </div>
+                        <span className="badge badge-active">Connected</span>
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
+                          <path d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z"/>
+                        </svg>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : null}
 
-                  {/* Token update / disconnect */}
-                  <div className="integration-token-section">
+            {/* ── Add view ── */}
+            {integrationsView === 'add' ? (
+              <>
+                <div className="integrations-page-head">
+                  <button className="btn btn-ghost btn-sm" onClick={() => setIntegrationsView('list')}>
+                    ← Back
+                  </button>
+                  <h2>{addStep === 'picker' ? 'Choose a provider' : 'Connect GitHub'}</h2>
+                  <div />
+                </div>
+
+                {addStep === 'picker' ? (
+                  <div className="provider-grid">
+                    <div className="provider-option" onClick={() => setAddStep('form')}>
+                      <div className="provider-option-icon provider-option-icon-github">
+                        <svg width="38" height="38" viewBox="0 0 16 16" fill="currentColor">
+                          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                        </svg>
+                      </div>
+                      <div className="provider-option-name">GitHub</div>
+                      <div className="provider-option-desc">Connect your GitHub account via a Personal Access Token</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="card card-form" style={{ maxWidth: 480 }}>
                     <div className="form-group">
-                      <label>Update Personal Access Token</label>
+                      <label>Personal Access Token (PAT)</label>
                       <input
                         type="password"
                         value={integrationToken}
                         onChange={(e) => setIntegrationToken(e.target.value)}
-                        placeholder="New GitHub PAT…"
+                        placeholder="github_pat_…"
+                        autoFocus
                       />
+                    </div>
+                    <div className="integration-hint">
+                      Use a fine-grained PAT with minimal permissions: Contents (read) and Pull requests (read/write).
                     </div>
                     <div className="integration-actions">
                       <button
                         className="btn btn-primary"
-                        onClick={handleConnectGitHub}
                         disabled={!integrationToken.trim() || integrationSaving}
+                        onClick={async () => {
+                          if (!integrationToken.trim()) return;
+                          setIntegrationSaving(true);
+                          setStatusError('');
+                          try {
+                            await connectGitHub(integrationToken.trim());
+                            setIntegrationToken('');
+                            await loadIntegrations();
+                            setIntegrationsView('list');
+                          } catch (err: unknown) {
+                            setStatusError(err instanceof Error ? err.message : 'Failed to connect GitHub');
+                          } finally {
+                            setIntegrationSaving(false);
+                          }
+                        }}
                       >
-                        {integrationSaving ? 'Updating…' : 'Update token'}
+                        {integrationSaving ? 'Connecting…' : 'Connect GitHub'}
                       </button>
-                      <button
-                        className="btn btn-danger"
-                        onClick={handleDisconnectGitHub}
-                        disabled={integrationSaving}
-                      >
-                        {integrationSaving ? 'Disconnecting…' : 'Disconnect'}
+                      <button className="btn btn-ghost" onClick={() => setAddStep('picker')}>
+                        Back
                       </button>
                     </div>
-                    <div className="integration-hint">
-                      Use a fine-grained GitHub PAT with minimal repository permissions (contents: read, pull requests: read/write).
-                    </div>
                   </div>
-                </>
-              ) : (
-                <>
-                  {/* Connect form */}
-                  <div className="form-group">
-                    <label>Personal Access Token (PAT)</label>
-                    <input
-                      type="password"
-                      value={integrationToken}
-                      onChange={(e) => setIntegrationToken(e.target.value)}
-                      placeholder="github_pat_…"
-                    />
-                  </div>
-                  <div className="integration-hint">
-                    Use a fine-grained GitHub PAT with minimal repository permissions (contents: read, pull requests: read/write).
-                  </div>
-                  <div className="integration-actions">
-                    <button
-                      className="btn btn-primary"
-                      onClick={handleConnectGitHub}
-                      disabled={!integrationToken.trim() || integrationSaving}
-                    >
-                      {integrationSaving ? 'Connecting…' : 'Connect GitHub'}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+                )}
+              </>
+            ) : null}
 
-            {/* Per-agent enablement */}
-            <h2 style={{ marginTop: 8 }}>Per-Agent GitHub Integration</h2>
-            <div className="card card-table">
-              {agents.length === 0 ? (
-                <div className="empty-state">No agents found. Create an agent first.</div>
-              ) : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Runtime</th>
-                      <th>Model</th>
-                      <th>GitHub</th>
-                      <th>Status</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {agents.map((agent) => {
-                      const binding = githubProvider?.agent_bindings.find(
-                        (b) => b.agent_id === agent.id,
-                      );
-                      return (
-                        <tr key={agent.id}>
-                          <td><strong>{agent.name}</strong></td>
-                          <td><span className="tag">{agent.runtime}</span></td>
-                          <td><span className="tag tag-model">{agent.model}</span></td>
-                          <td>
-                            {binding?.enabled ? (
-                              <span className="badge badge-active">Enabled</span>
-                            ) : (
-                              <span className="badge badge-disabled">Disabled</span>
-                            )}
-                          </td>
-                          <td>{binding?.status ?? '—'}</td>
-                          <td>
-                            <button
-                              className="btn btn-sm"
-                              onClick={() =>
-                                handleToggleAgentIntegration(agent.id, !binding?.enabled)
+            {/* ── Detail view ── */}
+            {integrationsView === 'detail' ? (() => {
+              const provider = integrationProviders.find((p) => p.provider_id === detailProviderId);
+              if (!provider) return null;
+              return (
+                <>
+                  <div className="integrations-page-head">
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => { setDetailProviderId(''); setIntegrationsView('list'); }}
+                    >
+                      ← Back
+                    </button>
+                    <div className="integration-detail-title">
+                      <div className="integration-detail-icon integration-detail-icon-github">
+                        <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor">
+                          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                        </svg>
+                      </div>
+                      <h2>{provider.name}</h2>
+                    </div>
+                    <div />
+                  </div>
+
+                  {/* Connection info */}
+                  {provider.connection ? (
+                    <div className="card card-detail">
+                      <h3 style={{ fontWeight: 600, marginBottom: 12 }}>Connection</h3>
+                      <div className="integration-details">
+                        <div className="integration-detail-item">
+                          <span className="integration-detail-label">GitHub Login</span>
+                          <span className="integration-detail-value">{provider.connection.external_login}</span>
+                        </div>
+                        <div className="integration-detail-item">
+                          <span className="integration-detail-label">Account Type</span>
+                          <span className="integration-detail-value">{provider.connection.account_type}</span>
+                        </div>
+                        <div className="integration-detail-item">
+                          <span className="integration-detail-label">Status</span>
+                          <span className="integration-detail-value">{provider.connection.status}</span>
+                        </div>
+                        <div className="integration-detail-item">
+                          <span className="integration-detail-label">Revision</span>
+                          <span className="integration-detail-value">{provider.connection.revision}</span>
+                        </div>
+                      </div>
+                      <div className="integration-token-section">
+                        <div className="form-group">
+                          <label>Update Personal Access Token</label>
+                          <input
+                            type="password"
+                            value={integrationToken}
+                            onChange={(e) => setIntegrationToken(e.target.value)}
+                            placeholder="New GitHub PAT…"
+                          />
+                        </div>
+                        <div className="integration-hint">
+                          Use a fine-grained PAT with minimal permissions: Contents (read) and Pull requests (read/write).
+                        </div>
+                        <div className="integration-actions">
+                          <button
+                            className="btn btn-primary"
+                            onClick={handleConnectGitHub}
+                            disabled={!integrationToken.trim() || integrationSaving}
+                          >
+                            {integrationSaving ? 'Updating…' : 'Update token'}
+                          </button>
+                          <button
+                            className="btn btn-danger"
+                            onClick={async () => {
+                              setIntegrationSaving(true);
+                              setStatusError('');
+                              try {
+                                await disconnectGitHub();
+                                await loadIntegrations();
+                                setDetailProviderId('');
+                                setIntegrationsView('list');
+                              } catch (err: unknown) {
+                                setStatusError(err instanceof Error ? err.message : 'Failed to disconnect GitHub');
+                              } finally {
+                                setIntegrationSaving(false);
                               }
-                              disabled={
-                                !githubProvider?.connected ||
-                                integrationAction === agent.id
-                              }
-                            >
-                              {integrationAction === agent.id
-                                ? '…'
-                                : binding?.enabled
-                                ? 'Disable'
-                                : 'Enable'}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
+                            }}
+                            disabled={integrationSaving}
+                          >
+                            {integrationSaving ? 'Disconnecting…' : 'Disconnect'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* Agents */}
+                  <div className="card card-detail">
+                    <h3 style={{ fontWeight: 600, marginBottom: 4 }}>Agents</h3>
+                    <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', marginBottom: 12 }}>
+                      Enable this integration per agent. Restart the agent after toggling for changes to take effect.
+                    </p>
+                    {agents.length === 0 ? (
+                      <div className="empty-state" style={{ padding: '8px 0 0' }}>No agents found.</div>
+                    ) : (
+                      <div className="integration-agents-list">
+                        {agents.map((agent) => {
+                          const binding = provider.agent_bindings.find((b) => b.agent_id === agent.id);
+                          return (
+                            <div key={agent.id} className="integration-agent-row">
+                              <div className="integration-agent-info">
+                                <div className="integration-agent-name">{agent.name}</div>
+                                <div className="integration-agent-meta">
+                                  <span className="tag">{agent.runtime}</span>
+                                  <span className={`state-dot ${agent.state}`} title={agent.state} />
+                                  {agent.state === 'running' && binding?.enabled ? (
+                                    <span style={{ fontSize: '0.72rem', color: 'var(--warning)' }}>restart to apply changes</span>
+                                  ) : null}
+                                </div>
+                              </div>
+                              <label className="toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={binding?.enabled ?? false}
+                                  disabled={!provider.connected || integrationAction === agent.id}
+                                  onChange={(e) => handleToggleAgentIntegration(agent.id, e.target.checked)}
+                                />
+                                <span className="toggle-slider" />
+                              </label>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })() : null}
 
           </div>
         </div>
