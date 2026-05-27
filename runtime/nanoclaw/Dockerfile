@@ -7,6 +7,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/shclop-
 
 FROM node:24-bookworm-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates && rm -rf /var/lib/apt/lists/*
+
 RUN npm install -g nano-claw
 
 COPY runtime/adapter/shclop-runtime-adapter.sh /usr/local/bin/shclop-runtime-adapter

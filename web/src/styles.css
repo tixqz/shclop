@@ -706,6 +706,128 @@ select {
   font-weight: 600;
 }
 
+.chat-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.integrations-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  min-width: 230px;
+  z-index: 50;
+  overflow: hidden;
+}
+
+.integrations-panel-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 10px 14px 6px;
+}
+
+.integration-panel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  gap: 12px;
+}
+
+.integration-panel-row:hover {
+  background: var(--bg);
+}
+
+.integration-panel-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.integration-panel-name {
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.integration-panel-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.integration-panel-note {
+  padding: 7px 14px;
+  font-size: 0.75rem;
+  color: var(--warning);
+  background: var(--warning-light);
+  border-top: 1px solid var(--border-light);
+}
+
+.integration-panel-empty {
+  padding: 12px 14px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* Toggle switch */
+.toggle {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--border);
+  border-radius: 20px;
+  transition: background 0.18s;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 3px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.18s;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+
+.toggle input:checked + .toggle-slider {
+  background: var(--primary);
+}
+
+.toggle input:checked + .toggle-slider::before {
+  transform: translateX(14px);
+}
+
+.toggle input:disabled + .toggle-slider {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .chat-messages {
   flex: 1;
   padding: 16px;

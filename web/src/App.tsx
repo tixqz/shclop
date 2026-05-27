@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   type Agent,
   type AdminOverview,
@@ -69,12 +69,13 @@ export default function App() {
   const [createRuntime, setCreateRuntime] = useState<'openclaw' | 'nanoclaw'>('openclaw');
   const [createModel, setCreateModel] = useState('');
   const [creating, setCreating] = useState(false);
-  const [createGithubEnabled, setCreateGithubEnabled] = useState(false);
   const [availableModels, setAvailableModels] = useState<LLMModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
   const [actionLoading, setActionLoading] = useState('');
   const [hoveredAgentId, setHoveredAgentId] = useState('');
+  const [showIntegrationsPanel, setShowIntegrationsPanel] = useState(false);
+  const integrationsPanelRef = useRef<HTMLDivElement>(null);
   const [archivedIds, setArchivedIds] = useState<Set<string>>(() => {
     try {
       return new Set(JSON.parse(localStorage.getItem('shclop_archived_agents') ?? '[]') as string[]);
@@ -147,6 +148,38 @@ export default function App() {
         .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
     [agents, archivedIds],
   );
+
+  const chatStorageKey = useCallback((id: string) => `shclop_chat_${id}`, []);
+
+  // Load chat history from localStorage when agent changes
+  useEffect(() => {
+    if (!selectedAgentId) { setChatMessages([]); return; }
+    try {
+      const saved = localStorage.getItem(chatStorageKey(selectedAgentId));
+      setChatMessages(saved ? (JSON.parse(saved) as ChatEvent[]) : []);
+    } catch {
+      setChatMessages([]);
+    }
+  }, [selectedAgentId, chatStorageKey]);
+
+  // Save chat history to localStorage when messages change
+  useEffect(() => {
+    if (!selectedAgentId) return;
+    if (chatMessages.length === 0) return;
+    localStorage.setItem(chatStorageKey(selectedAgentId), JSON.stringify(chatMessages));
+  }, [chatMessages, selectedAgentId, chatStorageKey]);
+
+  // Close integrations panel on outside click
+  useEffect(() => {
+    if (!showIntegrationsPanel) return;
+    function handleClick(e: MouseEvent) {
+      if (integrationsPanelRef.current && !integrationsPanelRef.current.contains(e.target as Node)) {
+        setShowIntegrationsPanel(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [showIntegrationsPanel]);
 
   // Chat auto-scroll
   useEffect(() => {
@@ -255,23 +288,14 @@ export default function App() {
     setCreating(true);
     setStatusError('');
     try {
-      const agent = await createAgent({
+      await createAgent({
         name: createName.trim(),
         runtime: createRuntime,
         model: createModel.trim(),
       });
-      if (createGithubEnabled) {
-        try {
-          await setAgentGitHubIntegration(agent.id, true);
-        } catch {
-          // non-fatal: agent created but GitHub enable failed (likely not connected)
-        }
-      }
       setCreateName('');
       setCreateModel('');
-      setCreateGithubEnabled(false);
       await loadAgents();
-      if (createGithubEnabled) await loadIntegrations();
     } catch (err: unknown) {
       setStatusError(err instanceof Error ? err.message : 'Failed to create agent');
     } finally {
@@ -776,20 +800,6 @@ export default function App() {
                   )}
                 </div>
               </div>
-              <div className="form-group form-group-check">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={createGithubEnabled}
-                    onChange={(e) => setCreateGithubEnabled(e.target.checked)}
-                    disabled={!githubConnected}
-                  />{' '}
-                  GitHub integration
-                  {!githubConnected ? (
-                    <span className="field-hint"> (connect GitHub first)</span>
-                  ) : null}
-                </label>
-              </div>
               <button
                 className="btn btn-primary btn-block"
                 onClick={handleCreateAgent}
@@ -818,9 +828,9 @@ export default function App() {
                         disconnectRef.current?.();
                         disconnectRef.current = null;
                         wsRef.current = null;
-                        setChatMessages([]);
                         setChatStatus('idle');
                         chatSessionIdRef.current = crypto.randomUUID();
+                        setShowIntegrationsPanel(false);
                       }}
                     >
                       <div className="agent-card-head">
@@ -915,9 +925,57 @@ export default function App() {
                 <div className="card card-chat">
                   <div className="chat-head">
                     <h3>Chat</h3>
-                    {chatStatus === 'connected' ? (
-                      <span className="badge badge-live">Live</span>
-                    ) : null}
+                    <div className="chat-head-right" ref={integrationsPanelRef}>
+                      {chatStatus === 'connected' ? (
+                        <span className="badge badge-live">Live</span>
+                      ) : null}
+                      <button
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => setShowIntegrationsPanel((v) => !v)}
+                      >
+                        Integrations
+                      </button>
+                      {showIntegrationsPanel ? (
+                        <div className="integrations-panel">
+                          <div className="integrations-panel-title">Integrations</div>
+                          {integrationProviders.length === 0 ? (
+                            <div className="integration-panel-empty">No integrations available.</div>
+                          ) : (
+                            integrationProviders.map((provider) => {
+                              const binding = provider.agent_bindings.find(
+                                (b) => b.agent_id === selectedAgent.id,
+                              );
+                              return (
+                                <div key={provider.provider_id} className="integration-panel-row">
+                                  <div className="integration-panel-info">
+                                    <span className="integration-panel-name">{provider.name}</span>
+                                    {!provider.connected ? (
+                                      <span className="integration-panel-hint">Not connected — go to Integrations page</span>
+                                    ) : null}
+                                  </div>
+                                  <label className="toggle">
+                                    <input
+                                      type="checkbox"
+                                      checked={binding?.enabled ?? false}
+                                      disabled={!provider.connected || integrationAction === selectedAgent.id}
+                                      onChange={(e) =>
+                                        handleToggleAgentIntegration(selectedAgent.id, e.target.checked)
+                                      }
+                                    />
+                                    <span className="toggle-slider" />
+                                  </label>
+                                </div>
+                              );
+                            })
+                          )}
+                          {selectedAgent.state === 'running' ? (
+                            <div className="integration-panel-note">
+                              Restart the agent to apply changes
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
 
                   <div className="chat-messages">
