@@ -98,13 +98,17 @@ func main() {
 }
 
 func adapterForRuntime(runtimeName string) claw.Adapter {
-	// If an internal OpenAI-compatible gateway is configured, use it. The
-	// gateway may be authenticated, but the runtime must not require provider
-	// secrets such as OpenRouter keys.
+	switch runtimeName {
+	case "nanoclaw":
+		return claw.NanoclawAdapter{}
+	case "openclaw":
+		return claw.OpenclawAdapter{}
+	}
+	// For other flavors use the built-in OpenAI adapter when a gateway is
+	// configured, otherwise echo via the demo adapter.
 	if strings.TrimSpace(os.Getenv("LLM_GATEWAY_BASE_URL")) != "" {
 		return claw.OpenAIAdapter{}
 	}
-	// Otherwise fall back to the demo adapter that echoes the input.
 	return claw.DemoAdapter{Flavor: runtimeName}
 }
 
