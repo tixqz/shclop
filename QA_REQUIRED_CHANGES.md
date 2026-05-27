@@ -69,7 +69,7 @@ Status markers are intentionally conservative: an item is checked only after the
 
 - [ ] Verified fixed on target environment
 - Severity: High
-- Evidence: Bob (`bob` / `Un6J6N0cKTgr24QU`) can log in, cannot access `/api/admin/users` (`forbidden`), cannot see admin-owned agents, can create `nanoclaw` agents, and can start them. Runtime pods for Bob's agents reach `READY 1/1 Running` and register with `llm_gateway_configured=true`.
+- Evidence: Bob can log in, cannot access `/api/admin/users` (`forbidden`), cannot see admin-owned agents, can create `nanoclaw` agents, and can start them. Runtime pods for Bob's agents reach `READY 1/1 Running` and register with `llm_gateway_configured=true`.
 - UI evidence: Bob logged in through the browser UI, created `bob-ui-test`, started it, and sent `Reply with exactly: bob ui ok`. The UI showed the user message and then displayed the runtime error `lookup litellm on 10.43.0.10:53: read: connection refused` instead of an assistant response.
 - Runtime/backend evidence: backend logged `task.routed` for Bob's agent `2b387776c084c26b1e04086a2534cd1c`; runtime logged `task received` for the same message.
 - Required change: make the Kata runtime networking/DNS path able to resolve and reach the LiteLLM service, or pass a reachable gateway URL to runtimes. Add an E2E test that runs from inside a Kata runtime pod and verifies DNS plus HTTP reachability of the configured LLM gateway before accepting the agent as chat-ready.
@@ -94,11 +94,11 @@ Status markers are intentionally conservative: an item is checked only after the
 - [ ] Verified fixed on target environment
 - Severity: Medium
 - Evidence: Grafana initially had no dashboards and its Prometheus datasource pointed to `http://prometheus-server.monitoring.svc.cluster.local`, which failed DNS lookup. The actual service is `prometheus-server-server`.
-- Manual QA fix: patched the remote Grafana ConfigMap to use `http://prometheus-server-server.monitoring.svc.cluster.local`, restarted Grafana, reset the admin password to `CiHuGao7eVT3bpo6`, and added dashboard `Shclop QA Overview` (`/d/shclop-qa-overview/shclop-qa-overview`) with backend up, container memory, container CPU, and recent Kubernetes logs panels.
+- Manual QA fix: patched the remote Grafana ConfigMap to use `http://prometheus-server-server.monitoring.svc.cluster.local`, restarted Grafana, rotated the admin password, and added dashboard `Shclop QA Overview` (`/d/shclop-qa-overview/shclop-qa-overview`) with backend up, container memory, container CPU, and recent Kubernetes logs panels.
 - Verification status: Grafana API search returns dashboard UID `shclop-qa-overview`; the dashboard opens in the Grafana UI; Prometheus query `up{service="shclop-backend"}` returns `1`; Loki query `{job="fluentbit"}` returns recent logs. The checkbox remains open because datasource URL, dashboard provisioning, and the non-default Grafana password are remote-only changes and are not persisted in bootstrap/Helm values.
 - Persistence fix applied: `scripts/bootstrap.sh` `install_grafana` now:
   - Uses the correct Prometheus URL `http://${PROMETHEUS_SERVER_SERVICE}.<ns>.svc.cluster.local` (defaults to `prometheus-server-server`).
-  - Sets the Grafana admin password to `CiHuGao7eVT3bpo6` by default (configurable via `GRAFANA_ADMIN_PASSWORD` env var).
+  - Sets the Grafana admin password from `GRAFANA_ADMIN_PASSWORD` when provided, otherwise uses the chart/dev default.
   - Enables the Grafana chart sidecar dashboards provider and provisions the `Shclop QA Overview` dashboard (UID `shclop-qa-overview`) with four panels: Backend Status (stat), Container Memory (timeseries), Container CPU (timeseries), and Recent Shclop Logs (Loki log panel). All changes are idempotent — re-running bootstrap upgrades Grafana in-place without manual ConfigMap patching.
 
 ## 12. Loki logs are not labeled by namespace for ergonomic Grafana queries
@@ -107,3 +107,101 @@ Status markers are intentionally conservative: an item is checked only after the
 - Severity: Low
 - Evidence: Grafana Loki query `{namespace="default"}` returned no log lines. Query `{job="fluentbit"}` returned recent Kubernetes logs because Fluent Bit currently sets `job=fluentbit` and embeds Kubernetes metadata in the log body instead of exposing `namespace` as a top-level Loki label.
 - Required change: configure Fluent Bit/Loki labels so common Kubernetes filters such as namespace, pod, and container work directly in Grafana dashboards and Explore.
+
+## 13. GitHub integrations E2E validation scenarios
+
+- [ ] Verified fixed on target environment
+- Severity: High
+- Goal: validate GitHub PAT connection, per-agent enablement, runtime env injection, negative/security paths, and audit integrity.
+- Deployment status: image `sha-b3804ac8adab3cea809a6eaa46f83f6710638f0d` was built by GitHub Actions and deployed by the production deploy workflow. The first deployed run exposed a migration gap: the backend returned `ERROR: relation "integration_connections" does not exist`; `migrations/0002_integrations.sql` was applied manually on the QA database before continuing. Persist migration execution in deploy/bootstrap before this section can be fully closed.
+- E2E evidence: a fine-grained GitHub PAT with `contents:read/write` access to `tixqz/test-hehehe` was connected for regular user Bob. A Bob-owned `nanoclaw` agent with GitHub enabled started successfully, the runtime pod spec contained `GITHUB_TOKEN` without printing the value, and `README.md` in `tixqz/test-hehehe` was updated from inside the runtime process using the injected token. The README now contains the marker `Runtime integration write verified`.
+- Security evidence: unauthenticated `GET /api/integrations` returned `401`; invalid PAT connect returned `400`; `GET /api/integrations`, connect response, and post-disconnect response contained no `token` or `secret` fields. The integration was disconnected after the test.
+- Remaining blockers: runtime DNS lookup for `api.github.com` returned `EAI_AGAIN`, so the runtime write used a resolved GitHub API IP with TLS SNI/Host set to `api.github.com`. This proves token injection and outbound HTTPS work, but runtime DNS/egress must be fixed before normal GitHub tooling can use hostnames. UI-specific scenarios and cross-user authorization scenarios still need browser/API retest.
+
+### Scenarios
+
+**13.1 Auth/visibility:**
+- [ ] Regular user can open Integrations page and see their own agents + bindings.
+- [x] Unauthenticated request to `/api/integrations` returns `401`/`403`.
+- [ ] User cannot see another user's integrations or bindings.
+
+**13.2 Connect — invalid PAT:**
+- [x] Connect GitHub with an invalid token (e.g. `ghp_invalid`).
+- [x] Backend rejects with `400`/`422` and a descriptive error message.
+- [ ] UI shows validation error in a toast/banner; connection remains in `disconnected` state.
+- [ ] Confirm no token is persisted in the database (if decrypt-check is feasible in test setup).
+
+**13.3 Connect — valid PAT:**
+- [x] Connect GitHub with a valid fine-grained PAT (minimal scope: only `contents:read` for a test repo).
+- [ ] UI shows connected state with GitHub login, account type, status, and revision metadata.
+- [ ] UI never displays the token or any portion of it.
+- [ ] Activity/audit log records an `integration.connected` event containing GitHub login but no token.
+- [x] `GET /api/integrations` response contains provider and connection metadata but **no** `token`, `encrypted_token`, or `secret` field.
+
+**13.4 Persistence after refresh/re-login:**
+- [ ] After connecting with a valid PAT, refresh the browser — UI still shows connected metadata.
+- [ ] Log out and log back in — metadata persists.
+- [ ] PAT input field is empty (token is never pre-filled).
+- [ ] `GET /api/integrations` does not return any field containing the raw or masked PAT value.
+
+**13.5 Per-agent enable/disable:**
+- [x] Enable GitHub integration for Agent A (user-owned, stopped).
+- [ ] Agent B (same user) remains disabled.
+- [ ] Summary/binding list shows enabled binding only for Agent A.
+- [x] Toggle Agent A off — binding reflects disabled state.
+
+**13.6 Runtime start with enabled integration:**
+- [x] Start Agent A (enabled) — runtime pod/container reaches `READY 1/1 Running`.
+- [x] Runtime env contains `GITHUB_TOKEN` (verify via controlled test image log or assertion that confirms env key presence without printing secret value; e.g. `stat -c %s /proc/1/environ` or `env | grep -q ^GITHUB_TOKEN=`).
+- [ ] Agent reaches running/chat-ready state (WebSocket registered).
+
+**13.7 Runtime start with disabled integration:**
+- [ ] Start Agent B (disabled) — runtime pod/container reaches `READY 1/1 Running`.
+- [ ] `GITHUB_TOKEN` is absent from container environment.
+- [ ] Agent reaches running/chat-ready state.
+
+**13.8 Token update:**
+- [ ] Connect with PAT v1, then update to PAT v2 via the Integrations page.
+- [ ] New runtime sessions started after the update receive PAT v2.
+- [ ] An already-running agent's environment does **not** mutate (existing process env is not expected to change).
+
+**13.9 Disconnect:**
+- [x] Disconnect GitHub integration.
+- [ ] Connection metadata is removed; UI returns to initial disconnected state.
+- [ ] Per-agent toggles are disabled or hidden; attempting to start a previously enabled agent does **not** inject `GITHUB_TOKEN`.
+- [ ] Reconnect works after disconnect (repeat 13.3).
+
+**13.10 Authorization boundaries:**
+- [ ] Bob (non-admin user) cannot toggle or modify integration for an admin-owned agent.
+- [ ] Bob cannot view admin's integration status or binding detail.
+- [ ] Admin's API response does not expose other users' PATs or encrypted secrets in any field.
+
+**13.11 API secret safety:**
+- [x] `GET /api/integrations` response contains no raw token, encrypted secret blob, or any masked-secret field.
+- [x] Connect response (PUT) contains no token echo or secret.
+- [x] Disconnect response contains no secret remnants.
+- [ ] Token field is `null`/omitted or explicitly excluded in all API specs.
+
+**13.12 Audit/activity events:**
+- [ ] `integration.connected` event exists (connect) — contains provider, GitHub login, timestamp; no token.
+- [ ] `integration.disconnected` event exists (disconnect) — contains provider and timestamp; no token.
+- [ ] `integration.agent_enabled` and `integration.agent_disabled` events exist — contain agent ID and provider; no token.
+- [ ] Events are queryable through the activity/audit API or logs.
+
+**13.13 Network/egress (MVP note):**
+- [x] MVP env injection itself does not require the runtime to reach `api.github.com` or any external endpoint — verify that a runtime with `GITHUB_TOKEN` set but no tool execution starts cleanly.
+- [x] Document whether future runtime tooling (e.g. git clone) will require egress; no test failure if egress is blocked for MVP.
+- [ ] Fix runtime DNS for external hostnames. Runtime HTTPS to GitHub succeeded only when using a pre-resolved GitHub API IP with TLS SNI/Host set to `api.github.com`; normal hostname lookup returned `EAI_AGAIN`.
+
+### Test data
+
+- **User A** (admin): `admin` / `<admin-password>`. One enabled agent `admin-agent-a` and one disabled agent `admin-agent-b`.
+- **User B** (regular): `bob` / `<bob-password>`. One enabled agent `bob-agent-a` and one disabled agent `bob-agent-b`.
+- **Valid PAT**: fine-grained PAT with `contents:read/write` scope on a dedicated test repository (`tixqz/test-hehehe` for this QA run). Revocable after QA.
+- **Invalid token**: string `ghp_invalid_token_for_testing_purposes_only`.
+
+> Do **not** commit real PAT values into this file or any repository file. Use environment variables or a secure vault during test execution.
+
+### Pass criteria
+
+All unchecked checkboxes above are checked (marked `[x]`) only after each scenario is verified **not to reproduce** or confirmed **to pass** on the target QA environment. Critical/High severity items (unauthenticated access, PAT exposure, authorization bypass, secret leak in API) must pass with zero regressions before marking this section complete.

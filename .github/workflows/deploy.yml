@@ -93,6 +93,9 @@ jobs:
               mkdir -p /home/${DEPLOY_USER}/shclop-release
               tar -xzf /home/${DEPLOY_USER}/shclop-release.tgz \
                 -C /home/${DEPLOY_USER}/shclop-release
+              sudo install -m 755 \
+                /home/${DEPLOY_USER}/shclop-release/scripts/deploy.sh \
+                /usr/local/sbin/shclop-deploy
               sudo /usr/local/sbin/shclop-deploy \
                 '${{ steps.tag.outputs.tag }}' \
                 /home/${DEPLOY_USER}/shclop-release

@@ -56,6 +56,67 @@ if [[ ! -d "$CHART_DIR" ]]; then
   exit 1
 fi
 
+MIGRATIONS_DIR="${RELEASE_DIR}/migrations"
+DASHBOARDS_DIR="${RELEASE_DIR}/monitoring/grafana-dashboards"
+
+apply_database_migrations() {
+  if [[ ! -d "$MIGRATIONS_DIR" ]]; then
+    echo "==> No migrations directory found at ${MIGRATIONS_DIR}; skipping."
+    return 0
+  fi
+
+  shopt -s nullglob
+  local migrations=("${MIGRATIONS_DIR}"/*.sql)
+  shopt -u nullglob
+  if [[ ${#migrations[@]} -eq 0 ]]; then
+    echo "==> No SQL migrations found; skipping."
+    return 0
+  fi
+
+  echo "==> Applying database migrations..."
+  kubectl rollout status deploy/shclop-postgres --namespace default --timeout=300s
+  for migration in "${migrations[@]}"; do
+    echo "    applying $(basename "$migration")"
+    kubectl exec -i deploy/shclop-postgres --namespace default -- \
+      psql -U shclop -d shclop -v ON_ERROR_STOP=1 < "$migration"
+  done
+}
+
+provision_grafana_dashboards() {
+  if [[ ! -d "$DASHBOARDS_DIR" ]]; then
+    echo "==> No Grafana dashboards directory found at ${DASHBOARDS_DIR}; skipping."
+    return 0
+  fi
+
+  shopt -s nullglob
+  local dashboards=("${DASHBOARDS_DIR}"/*.json)
+  shopt -u nullglob
+  if [[ ${#dashboards[@]} -eq 0 ]]; then
+    echo "==> No Grafana dashboard JSON files found; skipping."
+    return 0
+  fi
+
+  echo "==> Provisioning Grafana dashboards..."
+  kubectl rollout status deploy/grafana --namespace monitoring --timeout=300s
+  local grafana_password
+  grafana_password="$(kubectl get secret grafana --namespace monitoring -o jsonpath='{.data.admin-password}' | base64 -d)"
+  for dashboard in "${dashboards[@]}"; do
+    echo "    importing $(basename "$dashboard")"
+    python3 - "$dashboard" <<'PY' | curl -fsS -k -u "admin:${grafana_password}" \
+      -H 'Content-Type: application/json' \
+      -X POST https://grafana.178.62.240.51.nip.io/api/dashboards/db \
+      --data-binary @- >/dev/null
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    dashboard = json.load(fh)
+
+print(json.dumps({"dashboard": dashboard, "overwrite": True, "folderId": 0}))
+PY
+  done
+}
+
 # ── Helm upgrade ────────────────────────────────────────────────
 echo "==> Deploying shclop tag=${TAG} from ${RELEASE_DIR}..."
 
@@ -102,6 +163,9 @@ helm upgrade --install shclop "$CHART_DIR" \
   --set "observability.grafana.enabled=true" \
   --set "observability.grafana.url=https://grafana.178.62.240.51.nip.io" \
   --wait
+
+apply_database_migrations
+provision_grafana_dashboards
 
 # ── Rollout status ──────────────────────────────────────────────
 echo ""

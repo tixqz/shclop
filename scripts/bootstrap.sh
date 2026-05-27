@@ -684,7 +684,9 @@ GRAFANA_RELEASE="${GRAFANA_RELEASE:-grafana}"
 # with release name prometheus-server (the default PROMETHEUS_SERVER_RELEASE).
 PROMETHEUS_SERVER_SERVICE="${PROMETHEUS_SERVER_SERVICE:-prometheus-server-server}"
 # Grafana admin password (default matches current QA environment)
-GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-CiHuGao7eVT3bpo6}"
+# Override with GRAFANA_ADMIN_PASSWORD for shared environments. Do not commit
+# real shared credentials into this script.
+GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-admin}"
 
 cleanup_old_observability() {
   local ns="$observability_namespace"
@@ -923,7 +925,7 @@ YAML
 
   cat > "$tmp_values" <<YAML
 # Lightweight standalone Grafana for single-node deployments
-adminPassword: ${GRAFANA_ADMIN_PASSWORD:-CiHuGao7eVT3bpo6}
+adminPassword: ${GRAFANA_ADMIN_PASSWORD:-admin}
 defaultDashboardsEnabled: false
 ${grafana_ingress_tls}
 ${grafana_dashboard_provision}
