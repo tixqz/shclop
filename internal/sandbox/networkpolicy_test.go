@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 )
 
 func TestNetworkPolicySpecFromConfigParsesCIDRs(t *testing.T) {
@@ -87,10 +90,41 @@ func TestBuildRuntimeNetworkPolicyAllowsBackendAndVault(t *testing.T) {
 	if policy.Spec.Egress[0].To != nil {
 		t.Fatalf("expected backend rule to allow all destinations, got %#v", policy.Spec.Egress[0].To)
 	}
-	if policy.Spec.Egress[0].Ports[2].Port == nil || policy.Spec.Egress[0].Ports[2].Port.IntVal != 8080 {
+	if !hasPort(policy.Spec.Egress[:1], 8080, corev1.ProtocolTCP) {
 		t.Fatalf("expected 8080 backend port, got %#v", policy.Spec.Egress[0].Ports)
 	}
 	if policy.Spec.Egress[1].Ports[0].Port == nil || policy.Spec.Egress[1].Ports[0].Port.IntVal != 8200 {
 		t.Fatalf("expected vault 8200 port, got %#v", policy.Spec.Egress[1].Ports)
 	}
+}
+
+func TestBuildRuntimeNetworkPolicyAllowsDNSAndLLMGateway(t *testing.T) {
+	policy, err := BuildRuntimeNetworkPolicy("agent-1", "sandbox-1", NetworkPolicySpec{Enabled: true, Mode: NetworkPolicyRestricted, AllowBackend: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if policy == nil {
+		t.Fatal("expected policy")
+	}
+
+	if !hasPort(policy.Spec.Egress, 53, corev1.ProtocolUDP) || !hasPort(policy.Spec.Egress, 53, corev1.ProtocolTCP) {
+		t.Fatalf("expected DNS TCP/UDP 53 egress, got %#v", policy.Spec.Egress)
+	}
+	if !hasPort(policy.Spec.Egress, 4000, corev1.ProtocolTCP) {
+		t.Fatalf("expected LiteLLM TCP 4000 egress, got %#v", policy.Spec.Egress)
+	}
+}
+
+func hasPort(rules []networkingv1.NetworkPolicyEgressRule, port int32, protocol corev1.Protocol) bool {
+	for _, rule := range rules {
+		for _, candidate := range rule.Ports {
+			if candidate.Port == nil || candidate.Port.IntVal != port {
+				continue
+			}
+			if candidate.Protocol != nil && *candidate.Protocol == protocol {
+				return true
+			}
+		}
+	}
+	return false
 }

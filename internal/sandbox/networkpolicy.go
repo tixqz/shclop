@@ -87,7 +87,7 @@ func BuildRuntimeNetworkPolicy(agentID, sandboxID string, spec NetworkPolicySpec
 	}
 	if spec.AllowBackend {
 		policy.Spec.Egress = append(policy.Spec.Egress, networkingv1.NetworkPolicyEgressRule{
-			Ports: []networkingv1.NetworkPolicyPort{{Port: portOrNil(80), Protocol: tcpProtocol()}, {Port: portOrNil(443), Protocol: tcpProtocol()}, {Port: portOrNil(8080), Protocol: tcpProtocol()}},
+			Ports: []networkingv1.NetworkPolicyPort{{Port: portOrNil(53), Protocol: udpProtocol()}, {Port: portOrNil(53), Protocol: tcpProtocol()}, {Port: portOrNil(80), Protocol: tcpProtocol()}, {Port: portOrNil(443), Protocol: tcpProtocol()}, {Port: portOrNil(4000), Protocol: tcpProtocol()}, {Port: portOrNil(8080), Protocol: tcpProtocol()}},
 		})
 	}
 	if spec.AllowVault {
@@ -120,6 +120,11 @@ func BuildRuntimeNetworkPolicy(agentID, sandboxID string, spec NetworkPolicySpec
 
 func tcpProtocol() *corev1.Protocol {
 	p := corev1.ProtocolTCP
+	return &p
+}
+
+func udpProtocol() *corev1.Protocol {
+	p := corev1.ProtocolUDP
 	return &p
 }
 
