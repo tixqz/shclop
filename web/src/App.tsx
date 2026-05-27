@@ -375,8 +375,22 @@ export default function App() {
     ws.onmessage = (msg) => {
       try {
         const data = JSON.parse(msg.data) as ChatEvent;
-        setChatMessages((prev) => [...prev, data]);
-        if (data.done) {
+        if (data.type === 'message.started') {
+          setChatMessages((prev) => [...prev, { type: 'message.delta', text: '' }]);
+        } else if (data.type === 'message.delta') {
+          setChatMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.type === 'message.delta') {
+              return [...prev.slice(0, -1), { ...last, text: (last.text ?? '') + (data.text ?? '') }];
+            }
+            return [...prev, { type: 'message.delta', text: data.text ?? '' }];
+          });
+        } else if (data.type === 'message.done') {
+          ws.close();
+        } else if (data.type === 'message.error') {
+          setChatMessages((prev) => [...prev, data]);
+          ws.close();
+        } else if (data.done) {
           ws.close();
         }
       } catch {
@@ -809,7 +823,7 @@ export default function App() {
                             {msg.type === 'user' ? 'You' : selectedAgent.name}
                           </div>
                           <div className="msg-content">
-                            {msg.text || msg.error || JSON.stringify(msg, null, 2)}
+                            {msg.text || msg.error || (msg.type !== 'message.delta' ? JSON.stringify(msg, null, 2) : '…')}
                           </div>
                         </div>
                       ))
