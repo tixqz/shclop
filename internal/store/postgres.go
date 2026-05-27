@@ -237,6 +237,21 @@ func (p *Postgres) UpdateAgentError(ctx context.Context, agentID, lastError stri
 	return a, nil
 }
 
+func (p *Postgres) DeleteAgent(ctx context.Context, agentID string) error {
+	_, err := p.db.ExecContext(ctx, `delete from agent_integrations where agent_id = $1`, agentID)
+	if err != nil {
+		return fmt.Errorf("delete agent integrations: %w", err)
+	}
+	res, err := p.db.ExecContext(ctx, `delete from agents where id = $1`, agentID)
+	if err != nil {
+		return fmt.Errorf("delete agent: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // --- LLM Models ---
 
 func (p *Postgres) CreateLLMModel(ctx context.Context, displayName, providerModel string, enabled bool) (domain.LLMModel, error) {

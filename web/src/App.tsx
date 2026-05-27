@@ -15,6 +15,7 @@ import {
   createAgent,
   startAgent,
   stopAgent,
+  deleteAgent,
   listIntegrations,
   connectGitHub,
   disconnectGitHub,
@@ -68,10 +69,19 @@ export default function App() {
   const [createRuntime, setCreateRuntime] = useState<'openclaw' | 'nanoclaw'>('openclaw');
   const [createModel, setCreateModel] = useState('');
   const [creating, setCreating] = useState(false);
+  const [createGithubEnabled, setCreateGithubEnabled] = useState(false);
   const [availableModels, setAvailableModels] = useState<LLMModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
   const [actionLoading, setActionLoading] = useState('');
+  const [hoveredAgentId, setHoveredAgentId] = useState('');
+  const [archivedIds, setArchivedIds] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('shclop_archived_agents') ?? '[]') as string[]);
+    } catch {
+      return new Set();
+    }
+  });
 
   // integrations
   const [integrationProviders, setIntegrationProviders] = useState<IntegrationProvider[]>([]);
@@ -127,7 +137,16 @@ export default function App() {
     () => integrationProviders.find((p) => p.provider_id === 'github') ?? null,
     [integrationProviders],
   );
+  const githubConnected = githubProvider?.connected ?? false;
   const isAdmin = user?.role === 'admin';
+
+  const sortedVisibleAgents = useMemo(
+    () =>
+      [...agents]
+        .filter((a) => !archivedIds.has(a.id))
+        .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
+    [agents, archivedIds],
+  );
 
   // Chat auto-scroll
   useEffect(() => {
@@ -148,11 +167,12 @@ export default function App() {
       });
   }, [token]);
 
-  // On mount, if we have a token, load agents and available models
+  // On mount, if we have a token, load agents, available models and integration status
   useEffect(() => {
     if (!token) return;
     loadAgents();
     loadAvailableModels();
+    loadIntegrations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -235,14 +255,23 @@ export default function App() {
     setCreating(true);
     setStatusError('');
     try {
-      await createAgent({
+      const agent = await createAgent({
         name: createName.trim(),
         runtime: createRuntime,
         model: createModel.trim(),
       });
+      if (createGithubEnabled) {
+        try {
+          await setAgentGitHubIntegration(agent.id, true);
+        } catch {
+          // non-fatal: agent created but GitHub enable failed (likely not connected)
+        }
+      }
       setCreateName('');
       setCreateModel('');
+      setCreateGithubEnabled(false);
       await loadAgents();
+      if (createGithubEnabled) await loadIntegrations();
     } catch (err: unknown) {
       setStatusError(err instanceof Error ? err.message : 'Failed to create agent');
     } finally {
@@ -273,6 +302,45 @@ export default function App() {
       setStatusError(err instanceof Error ? err.message : 'Failed to stop agent');
     } finally {
       setActionLoading('');
+    }
+  }
+
+  async function handleDeleteAgent(id: string) {
+    setStatusError('');
+    try {
+      await deleteAgent(id);
+      setAgents((prev) => prev.filter((a) => a.id !== id));
+      if (selectedAgentId === id) {
+        setSelectedAgentId('');
+        disconnectRef.current?.();
+        disconnectRef.current = null;
+        wsRef.current = null;
+        setChatMessages([]);
+        setChatStatus('idle');
+      }
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to delete agent');
+    }
+  }
+
+  async function handleArchiveAgent(id: string) {
+    const agent = agents.find((a) => a.id === id);
+    if (agent?.state === 'running') {
+      try { await stopAgent(id); } catch { /* best effort */ }
+    }
+    setArchivedIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      localStorage.setItem('shclop_archived_agents', JSON.stringify([...next]));
+      return next;
+    });
+    if (selectedAgentId === id) {
+      setSelectedAgentId('');
+      disconnectRef.current?.();
+      disconnectRef.current = null;
+      wsRef.current = null;
+      setChatMessages([]);
+      setChatStatus('idle');
     }
   }
 
@@ -708,6 +776,20 @@ export default function App() {
                   )}
                 </div>
               </div>
+              <div className="form-group form-group-check">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={createGithubEnabled}
+                    onChange={(e) => setCreateGithubEnabled(e.target.checked)}
+                    disabled={!githubConnected}
+                  />{' '}
+                  GitHub integration
+                  {!githubConnected ? (
+                    <span className="field-hint"> (connect GitHub first)</span>
+                  ) : null}
+                </label>
+              </div>
               <button
                 className="btn btn-primary btn-block"
                 onClick={handleCreateAgent}
@@ -719,33 +801,61 @@ export default function App() {
 
             {/* Agent list */}
             <div className="agent-list">
-              {agents.length === 0 ? (
+              {sortedVisibleAgents.length === 0 ? (
                 <div className="empty-state">No agents yet. Create one above.</div>
               ) : (
-                agents.map((agent) => (
-                  <button
+                sortedVisibleAgents.map((agent) => (
+                  <div
                     key={agent.id}
-                    className={`agent-card ${agent.id === selectedAgentId ? 'selected' : ''}`}
-                    onClick={() => {
-                      setSelectedAgentId(agent.id);
-                      disconnectRef.current?.();
-                      disconnectRef.current = null;
-                      wsRef.current = null;
-                      setChatMessages([]);
-                      setChatStatus('idle');
-                      chatSessionIdRef.current = crypto.randomUUID();
-                    }}
+                    className="agent-card-wrapper"
+                    onMouseEnter={() => setHoveredAgentId(agent.id)}
+                    onMouseLeave={() => setHoveredAgentId('')}
                   >
-                    <div className="agent-card-head">
-                      <strong>{agent.name}</strong>
-                      <span className={`state-dot ${agent.state}`} title={agent.state} />
-                    </div>
-                    <div className="agent-card-meta">
-                      <span className="tag">{agent.runtime}</span>
-                      <span className="model-tag">{agent.model}</span>
-                    </div>
-                    <span className="agent-state-label">{agent.state}</span>
-                  </button>
+                    <button
+                      className={`agent-card ${agent.id === selectedAgentId ? 'selected' : ''}`}
+                      onClick={() => {
+                        setSelectedAgentId(agent.id);
+                        disconnectRef.current?.();
+                        disconnectRef.current = null;
+                        wsRef.current = null;
+                        setChatMessages([]);
+                        setChatStatus('idle');
+                        chatSessionIdRef.current = crypto.randomUUID();
+                      }}
+                    >
+                      <div className="agent-card-head">
+                        <strong>{agent.name}</strong>
+                        <span className={`state-dot ${agent.state}`} title={agent.state} />
+                      </div>
+                      <div className="agent-card-meta">
+                        <span className="tag">{agent.runtime}</span>
+                        <span className="model-tag">{agent.model}</span>
+                      </div>
+                      <span className="agent-state-label">{agent.state}</span>
+                    </button>
+                    {hoveredAgentId === agent.id ? (
+                      <div className="agent-card-actions">
+                        <button
+                          className="agent-action-btn archive-btn"
+                          title="Archive"
+                          onClick={(e) => { e.stopPropagation(); handleArchiveAgent(agent.id); }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M0 2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1v7.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 1 12.5V5a1 1 0 0 1-1-1zm2 3v7.5A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5zm13-3H1v2h14zM5 7.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5"/>
+                          </svg>
+                        </button>
+                        <button
+                          className="agent-action-btn delete-btn"
+                          title="Delete"
+                          onClick={(e) => { e.stopPropagation(); handleDeleteAgent(agent.id); }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M11 1.5v1h3.5a.5.5 0 0 1 0 1h-.538l-.853 10.66A2 2 0 0 1 11.115 16h-6.23a2 2 0 0 1-1.994-1.84L2.038 3.5H1.5a.5.5 0 0 1 0-1H5v-1A1.5 1.5 0 0 1 6.5 0h3A1.5 1.5 0 0 1 11 1.5m-5 0v1h4v-1a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5M4.5 5.029l.5 8.5a.5.5 0 1 0 .998-.06l-.5-8.5a.5.5 0 1 0-.998.06m6.53-.528a.5.5 0 0 0-.528.47l-.5 8.5a.5.5 0 0 0 .998.058l.5-8.5a.5.5 0 0 0-.47-.528M8 4.5a.5.5 0 0 0-.5.5v8.5a.5.5 0 0 0 1 0V5a.5.5 0 0 0-.5-.5"/>
+                          </svg>
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 ))
               )}
             </div>

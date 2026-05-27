@@ -215,6 +215,12 @@ export async function stopAgent(id: string): Promise<Agent> {
   });
 }
 
+export async function deleteAgent(id: string): Promise<void> {
+  return apiFetch<void>(`/api/agents/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
 // ── Integrations ──
 
 export async function listIntegrations(): Promise<IntegrationSummary> {

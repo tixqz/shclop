@@ -94,9 +94,17 @@ func writeNanoclawConfig() error {
 	return os.WriteFile(filepath.Join(configDir, "config.json"), data, 0600)
 }
 
-// nanoclawConfigDir returns the directory where nano-claw expects its config.
-// Falls back to /tmp/.nano-claw if the home directory is not writable.
+// nanoclawConfigDir returns a writable directory for nano-claw config.
+// Tries known writable mounts (/workspace, /memory) before falling back to
+// the user home dir. The directory is used as HOME for the subprocess so that
+// nano-claw resolves ~/.nano-claw/config.json inside it.
 func nanoclawConfigDir() string {
+	for _, base := range []string{"/workspace", "/memory"} {
+		dir := filepath.Join(base, ".nano-claw")
+		if testWritable(dir) {
+			return dir
+		}
+	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		dir := filepath.Join(home, ".nano-claw")
 		if testWritable(dir) {

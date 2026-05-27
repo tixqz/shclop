@@ -25,6 +25,7 @@ type Store interface {
 	ListAgents(ctx context.Context, ownerUserID string) ([]domain.Agent, error)
 	UpdateAgentState(ctx context.Context, agentID, state string) (domain.Agent, error)
 	UpdateAgentError(ctx context.Context, agentID, lastError string) (domain.Agent, error)
+	DeleteAgent(ctx context.Context, agentID string) error
 
 	// LLM Models
 	CreateLLMModel(ctx context.Context, displayName, providerModel string, enabled bool) (domain.LLMModel, error)
@@ -264,6 +265,28 @@ func (m *Memory) UpdateAgentError(ctx context.Context, agentID, lastError string
 		}
 	}
 	return domain.Agent{}, ErrNotFound
+}
+
+func (m *Memory) DeleteAgent(ctx context.Context, agentID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, a := range m.agents {
+		if a.ID == agentID {
+			m.agents = append(m.agents[:i], m.agents[i+1:]...)
+			var remaining []domain.AgentIntegration
+			for _, ai := range m.agentIntegrations {
+				if ai.AgentID != agentID {
+					remaining = append(remaining, ai)
+				}
+			}
+			m.agentIntegrations = remaining
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 
 // --- LLM Models ---

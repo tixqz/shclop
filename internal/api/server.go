@@ -527,11 +527,14 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 1 && parts[0] != "" {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w, http.MethodGet)
-			return
+		switch r.Method {
+		case http.MethodGet:
+			s.handleGetAgent(w, r, parts[0])
+		case http.MethodDelete:
+			s.handleDeleteAgent(w, r, parts[0])
+		default:
+			methodNotAllowed(w, "GET, DELETE")
 		}
-		s.handleGetAgent(w, r, parts[0])
 		return
 	}
 	http.NotFound(w, r)
@@ -831,6 +834,38 @@ func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request, agentID
 	s.metrics.agentStops.Inc()
 	s.recordActivity("agent.stopped", user.ID, agentID, "agent stopped", nil)
 	s.writeJSON(w, http.StatusOK, agent)
+}
+
+func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if agent.OwnerUserID != user.ID && user.Role != "admin" {
+		http.NotFound(w, r)
+		return
+	}
+
+	_ = s.sandbox.Stop(r.Context(), agentID)
+	s.tokenMu.Lock()
+	delete(s.tokens, agentID)
+	s.tokenMu.Unlock()
+
+	if err := s.store.DeleteAgent(r.Context(), agentID); err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.writeStoreError(w, err)
+		return
+	}
+	s.recordActivity("agent.deleted", user.ID, agentID, "agent deleted", map[string]any{"name": agent.Name})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Integrations ---
