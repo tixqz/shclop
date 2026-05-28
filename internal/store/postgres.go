@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
+	"sort"
 	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/mipopov/shclop/internal/domain"
+	"github.com/mipopov/shclop/migrations"
 )
 
 type Postgres struct{ db *sql.DB }
@@ -24,7 +27,35 @@ func NewPostgres(dsn string) (*Postgres, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
+	if err := runMigrations(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("run migrations: %w", err)
+	}
 	return &Postgres{db: db}, nil
+}
+
+func runMigrations(ctx context.Context, db *sql.DB) error {
+	entries, err := fs.ReadDir(migrations.FS, ".")
+	if err != nil {
+		return err
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			files = append(files, e.Name())
+		}
+	}
+	sort.Strings(files)
+	for _, name := range files {
+		data, err := migrations.FS.ReadFile(name)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+		if _, err := db.ExecContext(ctx, string(data)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (p *Postgres) Close() error { return p.db.Close() }
