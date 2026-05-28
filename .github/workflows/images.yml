@@ -7,6 +7,18 @@ on:
         description: Image tag to publish
         required: true
         type: string
+      shclop:
+        description: Build shclop (backend + frontend)
+        type: boolean
+        default: true
+      runtime_nanoclaw:
+        description: Build shclop-runtime-nanoclaw
+        type: boolean
+        default: true
+      runtime_openclaw:
+        description: Build shclop-runtime-openclaw
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -17,19 +29,35 @@ env:
   IMAGE_NAMESPACE: ${{ github.repository_owner }}
 
 jobs:
+  matrix-setup:
+    name: Resolve image matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - name: Build matrix
+        id: build
+        run: |
+          images='[]'
+          if [[ "${{ inputs.shclop }}" == "true" ]]; then
+            images=$(echo "$images" | jq '. + [{"image":"shclop","dockerfile":"Dockerfile"}]')
+          fi
+          if [[ "${{ inputs.runtime_openclaw }}" == "true" ]]; then
+            images=$(echo "$images" | jq '. + [{"image":"shclop-runtime-openclaw","dockerfile":"runtime/openclaw/Dockerfile"}]')
+          fi
+          if [[ "${{ inputs.runtime_nanoclaw }}" == "true" ]]; then
+            images=$(echo "$images" | jq '. + [{"image":"shclop-runtime-nanoclaw","dockerfile":"runtime/nanoclaw/Dockerfile"}]')
+          fi
+          echo "matrix=$(echo "$images" | jq -c '{"include":.}')" >> "$GITHUB_OUTPUT"
+
   images:
     name: Publish ${{ matrix.image }}
+    needs: matrix-setup
+    if: ${{ fromJson(needs.matrix-setup.outputs.matrix).include[0] != null }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - image: shclop
-            dockerfile: Dockerfile
-          - image: shclop-runtime-openclaw
-            dockerfile: runtime/openclaw/Dockerfile
-          - image: shclop-runtime-nanoclaw
-            dockerfile: runtime/nanoclaw/Dockerfile
+      matrix: ${{ fromJson(needs.matrix-setup.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
