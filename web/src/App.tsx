@@ -45,20 +45,20 @@ type AddStep = 'picker' | 'form';
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
 const AGENT_INIT_RE = /^🤖 Agent/;
+const LOG_START_RE = /^\[\d{2}:\d{2}:\d{2}\]/;
 
 function renderAgentText(raw: string): React.ReactNode {
   const lines = raw.replace(ANSI_RE, '').split('\n');
   const nodes: React.ReactNode[] = [];
+  let lastWasLog = false;
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line === '') continue;
-    if (line.startsWith('stderr: ')) {
-      const content = line.slice(8);
-      if (content === '' || AGENT_INIT_RE.test(content)) continue;
-      nodes.push(<div key={i} className="chat-log-line">{content}</div>);
-    } else {
-      nodes.push(<div key={i} className="chat-text-line">{line}</div>);
-    }
+    // strip stderr prefix if subprocess added it
+    const line = lines[i].startsWith('stderr: ') ? lines[i].slice(8) : lines[i];
+    if (line === '') { lastWasLog = false; continue; }
+    if (AGENT_INIT_RE.test(line)) continue;
+    const isLog: boolean = LOG_START_RE.test(line) || (lastWasLog && /^\s/.test(line));
+    lastWasLog = isLog;
+    nodes.push(<div key={i} className={isLog ? 'chat-log-line' : 'chat-text-line'}>{line}</div>);
   }
   if (nodes.length === 0) return <span className="chat-streaming">…</span>;
   return <>{nodes}</>;
