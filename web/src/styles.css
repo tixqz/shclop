@@ -1610,3 +1610,38 @@ tbody tr:hover {
   font-size: 0.75rem;
   color: var(--text-muted);
 }
+
+/* ── Agent chat message rendering ── */
+
+.chat-text-line {
+  line-height: 1.5;
+}
+
+.chat-text-line + .chat-text-line {
+  margin-top: 2px;
+}
+
+.chat-log-line {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.chat-log-line + .chat-text-line,
+.chat-text-line + .chat-log-line {
+  margin-top: 6px;
+}
+
+.chat-streaming {
+  color: var(--text-muted);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

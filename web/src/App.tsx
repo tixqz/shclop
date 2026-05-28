@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   type Agent,
   type AdminOverview,
@@ -41,6 +41,28 @@ type IntegrationsView = 'list' | 'add' | 'detail';
 type AddStep = 'picker' | 'form';
 
 /* ── helpers ── */
+
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+const AGENT_INIT_RE = /^🤖 Agent/;
+
+function renderAgentText(raw: string): React.ReactNode {
+  const lines = raw.replace(ANSI_RE, '').split('\n');
+  const nodes: React.ReactNode[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === '') continue;
+    if (line.startsWith('stderr: ')) {
+      const content = line.slice(8);
+      if (content === '' || AGENT_INIT_RE.test(content)) continue;
+      nodes.push(<div key={i} className="chat-log-line">{content}</div>);
+    } else {
+      nodes.push(<div key={i} className="chat-text-line">{line}</div>);
+    }
+  }
+  if (nodes.length === 0) return <span className="chat-streaming">…</span>;
+  return <>{nodes}</>;
+}
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -954,10 +976,14 @@ export default function App() {
                       chatMessages.map((msg, i) => (
                         <div
                           key={i}
-                          className={`chat-msg ${msg.type === 'user' ? 'msg-user' : 'msg-agent'}`}
+                          className={`chat-msg ${msg.type === 'user' ? 'msg-user' : msg.type === 'message.error' ? 'msg-error' : 'msg-agent'}`}
                         >
                           <div className="msg-content">
-                            {msg.text || msg.error || (msg.type !== 'message.delta' ? JSON.stringify(msg, null, 2) : '…')}
+                            {msg.type === 'user'
+                              ? msg.text
+                              : msg.type === 'message.error'
+                              ? (msg.error ?? msg.text ?? 'Error')
+                              : renderAgentText(msg.text ?? '')}
                           </div>
                         </div>
                       ))
