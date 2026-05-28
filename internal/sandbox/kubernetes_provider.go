@@ -142,6 +142,7 @@ func (p *KubernetesRuntimeProvider) Start(ctx context.Context, request StartRequ
 		LLMGatewayBaseURL:   llmBaseURL,
 		LLMModel:            request.LLMModel,
 		LLMGatewaySecretRef: llmSecretRef,
+		SystemPrompt:        request.SystemPrompt,
 		IntegrationEnv:      request.IntegrationEnv,
 	})
 	pod := BuildRuntimePod(podSpec)

@@ -138,6 +138,16 @@ export async function readErrorMessage(res: Response): Promise<string> {
   }
 }
 
+// ── Global 401 handler ──
+// Called whenever any authenticated request returns 401 (session expired /
+// server restarted). Register once on app mount to trigger logout.
+
+let _onAuthError: (() => void) | null = null;
+
+export function registerAuthErrorHandler(fn: () => void): void {
+  _onAuthError = fn;
+}
+
 // ── Authenticated fetch wrapper ──
 
 async function apiFetch<T>(
@@ -157,6 +167,12 @@ async function apiFetch<T>(
   }
 
   const res = await fetch(path, { ...options, headers });
+
+  if (res.status === 401) {
+    clearToken();
+    _onAuthError?.();
+    throw new Error('Session expired. Please sign in again.');
+  }
 
   if (!res.ok) {
     throw new Error(await readErrorMessage(res));
@@ -194,8 +210,10 @@ export async function listAgents(): Promise<Agent[]> {
 
 export async function createAgent(body: {
   name: string;
+  description?: string;
   runtime: string;
   model: string;
+  system_prompt?: string;
 }): Promise<Agent> {
   return apiFetch<Agent>('/api/agents', {
     method: 'POST',

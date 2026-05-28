@@ -30,6 +30,7 @@ import {
   adminGetGateway,
   adminPatchGateway,
   adminGetOverview,
+  registerAuthErrorHandler,
 } from './api';
 
 type Page = 'agents' | 'integrations' | 'admin';
@@ -68,16 +69,22 @@ export default function App() {
   // agents
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState('');
-  const [createName, setCreateName] = useState('');
-  const [createRuntime, setCreateRuntime] = useState<'openclaw' | 'nanoclaw'>('openclaw');
-  const [createModel, setCreateModel] = useState('');
-  const [creating, setCreating] = useState(false);
   const [availableModels, setAvailableModels] = useState<LLMModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
   const [actionLoading, setActionLoading] = useState('');
   const [hoveredAgentId, setHoveredAgentId] = useState('');
   const [showIntegrationsPanel, setShowIntegrationsPanel] = useState(false);
+
+  // create agent modal
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createName, setCreateName] = useState('');
+  const [createDescription, setCreateDescription] = useState('');
+  const [createRuntime, setCreateRuntime] = useState<'openclaw' | 'nanoclaw'>('nanoclaw');
+  const [createModel, setCreateModel] = useState('');
+  const [createSystemPrompt, setCreateSystemPrompt] = useState('');
+  const [createIntegrations, setCreateIntegrations] = useState<Set<string>>(new Set());
+  const [creating, setCreating] = useState(false);
   const integrationsPanelRef = useRef<HTMLDivElement>(null);
   const [archivedIds, setArchivedIds] = useState<Set<string>>(() => {
     try {
@@ -213,6 +220,12 @@ export default function App() {
       });
   }, [token]);
 
+  // Register global 401 handler once — clears session and goes to login
+  useEffect(() => {
+    registerAuthErrorHandler(handleLogout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // On mount, if we have a token, load agents and available models
   useEffect(() => {
     if (!token) return;
@@ -300,13 +313,26 @@ export default function App() {
     setCreating(true);
     setStatusError('');
     try {
-      await createAgent({
+      const agent = await createAgent({
         name: createName.trim(),
+        description: createDescription.trim(),
         runtime: createRuntime,
         model: createModel.trim(),
+        system_prompt: createSystemPrompt.trim(),
       });
+      // Enable any toggled integrations on the new agent
+      for (const providerId of createIntegrations) {
+        try {
+          await setAgentGitHubIntegration(agent.id, true);
+        } catch {
+          // non-fatal — user can toggle later
+        }
+      }
       setCreateName('');
-      setCreateModel('');
+      setCreateDescription('');
+      setCreateSystemPrompt('');
+      setCreateIntegrations(new Set());
+      setShowCreateModal(false);
       await loadAgents();
     } catch (err: unknown) {
       setStatusError(err instanceof Error ? err.message : 'Failed to create agent');
@@ -760,72 +786,21 @@ export default function App() {
           <aside className="panel panel-sidebar">
             <div className="panel-head">
               <h2>Agents</h2>
-              <span className="count-badge">{agents.length}</span>
-            </div>
-
-            {/* Create agent form */}
-            <div className="card card-form">
-              <div className="form-group">
-                <label>Name</label>
-                <input
-                  type="text"
-                  value={createName}
-                  onChange={(e) => setCreateName(e.target.value)}
-                  placeholder="my-agent"
-                />
-              </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Runtime</label>
-                  <select
-                    value={createRuntime}
-                    onChange={(e) =>
-                      setCreateRuntime(e.target.value as 'openclaw' | 'nanoclaw')
-                    }
-                  >
-                    <option value="openclaw">OpenClaw</option>
-                    <option value="nanoclaw">NanoClaw</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Model</label>
-                  {modelsError || (!modelsLoading && availableModels.length === 0) ? (
-                    <div className="field-error">
-                      {modelsError || 'No models available. Contact an admin.'}
-                    </div>
-                  ) : modelsLoading ? (
-                    <div className="field-loading">Loading models…</div>
-                  ) : (
-                    <select
-                      value={createModel}
-                      onChange={(e) => setCreateModel(e.target.value)}
-                    >
-                      {availableModels.length === 0 ? (
-                        <option value="">No models available</option>
-                      ) : (
-                        availableModels.map((m) => (
-                          <option key={m.id} value={m.provider_model}>
-                            {m.display_name} ({m.provider_model})
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  )}
-                </div>
-              </div>
               <button
-                className="btn btn-primary btn-block"
-                onClick={handleCreateAgent}
-                disabled={creating || !createName.trim() || modelsLoading || availableModels.length === 0}
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  if (integrationProviders.length === 0) loadIntegrations();
+                  setShowCreateModal(true);
+                }}
               >
-                {creating ? 'Creating…' : 'Create agent'}
+                + New
               </button>
             </div>
 
             {/* Agent list */}
             <div className="agent-list">
               {sortedVisibleAgents.length === 0 ? (
-                <div className="empty-state">No agents yet. Create one above.</div>
+                <div className="empty-state">No agents yet.</div>
               ) : (
                 sortedVisibleAgents.map((agent) => (
                   <div
@@ -884,27 +859,25 @@ export default function App() {
             </div>
           </aside>
 
-          {/* Right panel: agent detail + chat */}
+          {/* Right panel: chat */}
           <div className="panel panel-main">
             {selectedAgent ? (
               <div className="detail-panel">
-                {/* Agent info */}
-                <div className="card card-detail">
-                  <div className="detail-head">
-                    <div>
-                      <h2>{selectedAgent.name}</h2>
-                      <div className="detail-meta">
-                        <span className="tag">{selectedAgent.runtime}</span>
-                        <span className="tag tag-model">{selectedAgent.model}</span>
-                        <span className={`state-label ${selectedAgent.state}`}>
-                          {selectedAgent.state}
-                        </span>
-                      </div>
+                {/* Chat */}
+                <div className="card card-chat">
+                  <div className="chat-head">
+                    <div className="chat-head-left">
+                      <span className={`state-dot ${selectedAgent.state}`} title={selectedAgent.state} />
+                      <h3>{selectedAgent.name}</h3>
+                      <span className="tag tag-model">{selectedAgent.model}</span>
                     </div>
-                    <div className="detail-actions">
+                    <div className="chat-head-right" ref={integrationsPanelRef}>
+                      {chatStatus === 'connected' ? (
+                        <span className="badge badge-live">Live</span>
+                      ) : null}
                       {selectedAgent.state === 'running' ? (
                         <button
-                          className="btn btn-danger"
+                          className="btn btn-sm btn-danger"
                           onClick={() => handleStopAgent(selectedAgent.id)}
                           disabled={actionLoading === selectedAgent.id}
                         >
@@ -912,39 +885,20 @@ export default function App() {
                         </button>
                       ) : (
                         <button
-                          className="btn btn-primary"
+                          className="btn btn-sm btn-primary"
                           onClick={() => handleStartAgent(selectedAgent.id)}
                           disabled={actionLoading === selectedAgent.id}
                         >
                           {actionLoading === selectedAgent.id ? '…' : 'Start'}
                         </button>
                       )}
-                    </div>
-                  </div>
-                  {selectedAgent.last_error ? (
-                    <div className="detail-error">
-                      Last error: {selectedAgent.last_error}
-                    </div>
-                  ) : null}
-                  <div className="detail-ts">
-                    Created {timeAgo(selectedAgent.created_at)}
-                    {selectedAgent.updated_at
-                      ? ` · Updated ${timeAgo(selectedAgent.updated_at)}`
-                      : ''}
-                  </div>
-                </div>
-
-                {/* Chat */}
-                <div className="card card-chat">
-                  <div className="chat-head">
-                    <h3>Chat</h3>
-                    <div className="chat-head-right" ref={integrationsPanelRef}>
-                      {chatStatus === 'connected' ? (
-                        <span className="badge badge-live">Live</span>
-                      ) : null}
                       <button
                         className="btn btn-sm btn-ghost"
-                        onClick={() => setShowIntegrationsPanel((v) => !v)}
+                        onClick={() => {
+                          const opening = !showIntegrationsPanel;
+                          setShowIntegrationsPanel(opening);
+                          if (opening && integrationProviders.length === 0) loadIntegrations();
+                        }}
                       >
                         Integrations
                       </button>
@@ -1002,9 +956,6 @@ export default function App() {
                           key={i}
                           className={`chat-msg ${msg.type === 'user' ? 'msg-user' : 'msg-agent'}`}
                         >
-                          <div className="msg-label">
-                            {msg.type === 'user' ? 'You' : selectedAgent.name}
-                          </div>
                           <div className="msg-content">
                             {msg.text || msg.error || (msg.type !== 'message.delta' ? JSON.stringify(msg, null, 2) : '…')}
                           </div>
@@ -1013,7 +964,6 @@ export default function App() {
                     )}
                     {chatStatus === 'connecting' ? (
                       <div className="chat-msg msg-agent">
-                        <div className="msg-label">System</div>
                         <div className="msg-content connecting-dots">
                           Connecting<span>.</span><span>.</span><span>.</span>
                         </div>
@@ -1021,7 +971,6 @@ export default function App() {
                     ) : null}
                     {chatError ? (
                       <div className="chat-msg msg-error">
-                        <div className="msg-label">Error</div>
                         <div className="msg-content">{chatError}</div>
                       </div>
                     ) : null}
@@ -1472,6 +1421,124 @@ export default function App() {
                 </div>
               </div>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── Create Agent Modal ── */}
+      {showCreateModal ? (
+        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowCreateModal(false); }}>
+          <div className="modal">
+            <div className="modal-head">
+              <h2>New Agent</h2>
+              <button className="btn btn-ghost btn-sm modal-close" onClick={() => setShowCreateModal(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label>Name <span className="required">*</span></label>
+                <input
+                  type="text"
+                  value={createName}
+                  onChange={(e) => setCreateName(e.target.value)}
+                  placeholder="my-agent"
+                  autoFocus
+                />
+              </div>
+              <div className="form-group">
+                <label>Description</label>
+                <input
+                  type="text"
+                  value={createDescription}
+                  onChange={(e) => setCreateDescription(e.target.value)}
+                  placeholder="What does this agent do?"
+                />
+              </div>
+              <div className="form-row form-row-inline">
+                <div className="form-group">
+                  <label>Runtime</label>
+                  <select value={createRuntime} onChange={(e) => setCreateRuntime(e.target.value as 'openclaw' | 'nanoclaw')}>
+                    <option value="nanoclaw">nanoclaw</option>
+                    <option value="openclaw">openclaw</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Model</label>
+                  {modelsLoading ? (
+                    <select disabled><option>Loading…</option></select>
+                  ) : modelsError ? (
+                    <input
+                      type="text"
+                      value={createModel}
+                      onChange={(e) => setCreateModel(e.target.value)}
+                      placeholder="e.g. gpt-4o"
+                    />
+                  ) : availableModels.length > 0 ? (
+                    <select value={createModel} onChange={(e) => setCreateModel(e.target.value)}>
+                      {availableModels.map((m) => (
+                        <option key={m.id} value={m.provider_model}>{m.display_name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={createModel}
+                      onChange={(e) => setCreateModel(e.target.value)}
+                      placeholder="e.g. gpt-4o"
+                    />
+                  )}
+                </div>
+              </div>
+              <div className="form-group">
+                <label>System Prompt</label>
+                <textarea
+                  value={createSystemPrompt}
+                  onChange={(e) => setCreateSystemPrompt(e.target.value)}
+                  placeholder="Optional instructions for the agent…"
+                  rows={4}
+                />
+              </div>
+              {integrationProviders.length > 0 ? (
+                <div className="form-group">
+                  <label>Integrations</label>
+                  <div className="modal-integrations">
+                    {integrationProviders.map((provider) => (
+                      <label key={provider.provider_id} className={`modal-integration-row ${!provider.connected ? 'disabled' : ''}`}>
+                        <span className="modal-integration-name">{provider.name}</span>
+                        {!provider.connected ? (
+                          <span className="modal-integration-hint">not connected</span>
+                        ) : null}
+                        <label className="toggle">
+                          <input
+                            type="checkbox"
+                            checked={createIntegrations.has(provider.provider_id)}
+                            disabled={!provider.connected}
+                            onChange={(e) => {
+                              setCreateIntegrations((prev) => {
+                                const next = new Set(prev);
+                                if (e.target.checked) next.add(provider.provider_id);
+                                else next.delete(provider.provider_id);
+                                return next;
+                              });
+                            }}
+                          />
+                          <span className="toggle-slider" />
+                        </label>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setShowCreateModal(false)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                onClick={handleCreateAgent}
+                disabled={creating || !createName.trim()}
+              >
+                {creating ? 'Creating…' : 'Create agent'}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

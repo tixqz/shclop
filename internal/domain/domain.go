@@ -71,15 +71,17 @@ type User struct {
 }
 
 type Agent struct {
-	ID          string    `json:"id"`
-	OwnerUserID string    `json:"owner_user_id"`
-	Name        string    `json:"name"`
-	Runtime     string    `json:"runtime"` // "openclaw" or "nanoclaw"
-	Model       string    `json:"model"`
-	State       string    `json:"state"` // idle, starting, running, stopped, error
-	LastError   string    `json:"last_error,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	OwnerUserID  string    `json:"owner_user_id"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description,omitempty"`
+	Runtime      string    `json:"runtime"` // "openclaw" or "nanoclaw"
+	Model        string    `json:"model"`
+	SystemPrompt string    `json:"system_prompt,omitempty"`
+	State        string    `json:"state"` // idle, starting, running, stopped, error
+	LastError    string    `json:"last_error,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type LLMModel struct {
@@ -125,9 +127,11 @@ type AdminHealthStatus struct {
 
 // CreateAgentInput is used when creating an agent via the API.
 type CreateAgentInput struct {
-	Name    string `json:"name"`
-	Runtime string `json:"runtime"`
-	Model   string `json:"model"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Runtime      string `json:"runtime"`
+	Model        string `json:"model"`
+	SystemPrompt string `json:"system_prompt"`
 }
 
 type Message struct {

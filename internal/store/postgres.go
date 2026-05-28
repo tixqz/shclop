@@ -154,7 +154,7 @@ func (p *Postgres) SetPasswordHash(ctx context.Context, username, hash string) e
 
 // --- Agents ---
 
-func (p *Postgres) CreateAgent(ctx context.Context, ownerUserID, name, runtime, model string) (domain.Agent, error) {
+func (p *Postgres) CreateAgent(ctx context.Context, ownerUserID, name, description, runtime, model, systemPrompt string) (domain.Agent, error) {
 	id, err := newID()
 	if err != nil {
 		return domain.Agent{}, err
@@ -162,11 +162,11 @@ func (p *Postgres) CreateAgent(ctx context.Context, ownerUserID, name, runtime, 
 	now := time.Now().UTC()
 	var a domain.Agent
 	err = p.db.QueryRowContext(ctx,
-		`insert into agents (id, owner_user_id, name, runtime, model, state, created_at, updated_at)
-		 values ($1,$2,$3,$4,$5,'idle',$6,$7)
-		 returning id, owner_user_id, name, runtime, model, state, last_error, created_at, updated_at`,
-		id, ownerUserID, name, runtime, model, now, now,
-	).Scan(&a.ID, &a.OwnerUserID, &a.Name, &a.Runtime, &a.Model, &a.State, &a.LastError, &a.CreatedAt, &a.UpdatedAt)
+		`insert into agents (id, owner_user_id, name, description, runtime, model, system_prompt, state, created_at, updated_at)
+		 values ($1,$2,$3,$4,$5,$6,$7,'idle',$8,$9)
+		 returning id, owner_user_id, name, description, runtime, model, system_prompt, state, last_error, created_at, updated_at`,
+		id, ownerUserID, name, description, runtime, model, systemPrompt, now, now,
+	).Scan(&a.ID, &a.OwnerUserID, &a.Name, &a.Description, &a.Runtime, &a.Model, &a.SystemPrompt, &a.State, &a.LastError, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return domain.Agent{}, fmt.Errorf("create agent: %w", err)
 	}
@@ -176,8 +176,8 @@ func (p *Postgres) CreateAgent(ctx context.Context, ownerUserID, name, runtime, 
 func (p *Postgres) GetAgent(ctx context.Context, agentID string) (domain.Agent, error) {
 	var a domain.Agent
 	err := p.db.QueryRowContext(ctx,
-		`select id, owner_user_id, name, runtime, model, state, last_error, created_at, updated_at from agents where id = $1`, agentID,
-	).Scan(&a.ID, &a.OwnerUserID, &a.Name, &a.Runtime, &a.Model, &a.State, &a.LastError, &a.CreatedAt, &a.UpdatedAt)
+		`select id, owner_user_id, name, description, runtime, model, system_prompt, state, last_error, created_at, updated_at from agents where id = $1`, agentID,
+	).Scan(&a.ID, &a.OwnerUserID, &a.Name, &a.Description, &a.Runtime, &a.Model, &a.SystemPrompt, &a.State, &a.LastError, &a.CreatedAt, &a.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return domain.Agent{}, ErrNotFound
 	}
@@ -189,7 +189,7 @@ func (p *Postgres) GetAgent(ctx context.Context, agentID string) (domain.Agent, 
 
 func (p *Postgres) ListAgents(ctx context.Context, ownerUserID string) ([]domain.Agent, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`select id, owner_user_id, name, runtime, model, state, last_error, created_at, updated_at from agents where owner_user_id = $1 order by created_at asc, id asc`, ownerUserID)
+		`select id, owner_user_id, name, description, runtime, model, system_prompt, state, last_error, created_at, updated_at from agents where owner_user_id = $1 order by created_at asc, id asc`, ownerUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +197,7 @@ func (p *Postgres) ListAgents(ctx context.Context, ownerUserID string) ([]domain
 	var out []domain.Agent
 	for rows.Next() {
 		var a domain.Agent
-		if err := rows.Scan(&a.ID, &a.OwnerUserID, &a.Name, &a.Runtime, &a.Model, &a.State, &a.LastError, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.OwnerUserID, &a.Name, &a.Description, &a.Runtime, &a.Model, &a.SystemPrompt, &a.State, &a.LastError, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -209,9 +209,9 @@ func (p *Postgres) UpdateAgentState(ctx context.Context, agentID, state string) 
 	var a domain.Agent
 	err := p.db.QueryRowContext(ctx,
 		`update agents set state = $2, updated_at = $3 where id = $1
-		 returning id, owner_user_id, name, runtime, model, state, last_error, created_at, updated_at`,
+		 returning id, owner_user_id, name, description, runtime, model, system_prompt, state, last_error, created_at, updated_at`,
 		agentID, state, time.Now().UTC(),
-	).Scan(&a.ID, &a.OwnerUserID, &a.Name, &a.Runtime, &a.Model, &a.State, &a.LastError, &a.CreatedAt, &a.UpdatedAt)
+	).Scan(&a.ID, &a.OwnerUserID, &a.Name, &a.Description, &a.Runtime, &a.Model, &a.SystemPrompt, &a.State, &a.LastError, &a.CreatedAt, &a.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return domain.Agent{}, ErrNotFound
 	}
@@ -225,9 +225,9 @@ func (p *Postgres) UpdateAgentError(ctx context.Context, agentID, lastError stri
 	var a domain.Agent
 	err := p.db.QueryRowContext(ctx,
 		`update agents set last_error = $2, updated_at = $3 where id = $1
-		 returning id, owner_user_id, name, runtime, model, state, last_error, created_at, updated_at`,
+		 returning id, owner_user_id, name, description, runtime, model, system_prompt, state, last_error, created_at, updated_at`,
 		agentID, lastError, time.Now().UTC(),
-	).Scan(&a.ID, &a.OwnerUserID, &a.Name, &a.Runtime, &a.Model, &a.State, &a.LastError, &a.CreatedAt, &a.UpdatedAt)
+	).Scan(&a.ID, &a.OwnerUserID, &a.Name, &a.Description, &a.Runtime, &a.Model, &a.SystemPrompt, &a.State, &a.LastError, &a.CreatedAt, &a.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return domain.Agent{}, ErrNotFound
 	}

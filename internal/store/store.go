@@ -20,7 +20,7 @@ type Store interface {
 	UpdateUser(ctx context.Context, userID string, disabled *bool, role *string) (domain.User, error)
 
 	// Agents
-	CreateAgent(ctx context.Context, ownerUserID, name, runtime, model string) (domain.Agent, error)
+	CreateAgent(ctx context.Context, ownerUserID, name, description, runtime, model, systemPrompt string) (domain.Agent, error)
 	GetAgent(ctx context.Context, agentID string) (domain.Agent, error)
 	ListAgents(ctx context.Context, ownerUserID string) ([]domain.Agent, error)
 	UpdateAgentState(ctx context.Context, agentID, state string) (domain.Agent, error)
@@ -181,7 +181,7 @@ func (m *Memory) SetPasswordHash(_ context.Context, username, hash string) error
 
 // --- Agents ---
 
-func (m *Memory) CreateAgent(ctx context.Context, ownerUserID, name, runtime, model string) (domain.Agent, error) {
+func (m *Memory) CreateAgent(ctx context.Context, ownerUserID, name, description, runtime, model, systemPrompt string) (domain.Agent, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.Agent{}, err
 	}
@@ -193,14 +193,16 @@ func (m *Memory) CreateAgent(ctx context.Context, ownerUserID, name, runtime, mo
 	}
 	now := time.Now().UTC()
 	agent := domain.Agent{
-		ID:          id,
-		OwnerUserID: ownerUserID,
-		Name:        name,
-		Runtime:     runtime,
-		Model:       model,
-		State:       "idle",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:           id,
+		OwnerUserID:  ownerUserID,
+		Name:         name,
+		Description:  description,
+		Runtime:      runtime,
+		Model:        model,
+		SystemPrompt: systemPrompt,
+		State:        "idle",
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	m.agents = append(m.agents, agent)
 	return agent, nil

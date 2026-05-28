@@ -592,7 +592,7 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	agent, err := s.store.CreateAgent(r.Context(), user.ID, request.Name, request.Runtime, request.Model)
+	agent, err := s.store.CreateAgent(r.Context(), user.ID, request.Name, request.Description, request.Runtime, request.Model, request.SystemPrompt)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -762,6 +762,7 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 		LLMGatewayBaseURL:    settings.BaseURL,
 		LLMGatewaySecretName: settings.SecretName,
 		LLMGatewaySecretKey:  settings.SecretKey,
+		SystemPrompt:         agent.SystemPrompt,
 		IntegrationEnv:       integrationEnv,
 	})
 	if err != nil {

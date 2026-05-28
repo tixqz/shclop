@@ -17,6 +17,7 @@ type StartRequest struct {
 	LLMGatewayBaseURL    string
 	LLMGatewaySecretName string
 	LLMGatewaySecretKey  string
+	SystemPrompt         string            // optional agent system prompt
 	IntegrationEnv       map[string]string // additional env vars from integrations (e.g. GITHUB_TOKEN)
 }
 
@@ -80,6 +81,9 @@ func (p DockerDemoProvider) Start(ctx context.Context, request StartRequest) (Ru
 		"-e", "SHCLOP_AGENT_FLAVOR=" + runtime,
 	}
 
+	if request.SystemPrompt != "" {
+		args = append(args, "-e", "AGENT_SYSTEM_PROMPT="+request.SystemPrompt)
+	}
 	// Add integration environment variables (e.g. GITHUB_TOKEN)
 	for k, v := range request.IntegrationEnv {
 		// Do not log secrets; just add to args

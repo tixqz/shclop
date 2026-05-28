@@ -697,20 +697,32 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border-light);
+  gap: 12px;
+}
+
+.chat-head-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .chat-head h3 {
   font-size: 1rem;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chat-head-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   position: relative;
+  flex-shrink: 0;
 }
 
 .integrations-panel {
@@ -1476,4 +1488,125 @@ tbody tr:hover {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
+}
+
+/* ── Create Agent Modal ── */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 100%;
+  max-width: 520px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-head h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.modal-close {
+  padding: 2px 6px;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.modal-body {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+}
+
+.modal-body .form-group {
+  margin: 0;
+}
+
+.modal-body textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 80px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.875rem;
+  padding: 8px 10px;
+  font-family: inherit;
+}
+
+.modal-body textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.required {
+  color: var(--danger, #e05252);
+}
+
+.modal-integrations {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modal-integration-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface-raised);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.modal-integration-row.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.modal-integration-name {
+  flex: 1;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.modal-integration-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }

@@ -62,6 +62,13 @@ func writeNanoclawConfig() error {
 		return fmt.Errorf("LLM_GATEWAY_BASE_URL and LLM_GATEWAY_MODEL must be set")
 	}
 
+	agentDefaults := map[string]any{
+		"model": "openai/" + model,
+	}
+	if prompt := buildSystemPrompt(); prompt != "" {
+		agentDefaults["systemPrompt"] = prompt
+	}
+
 	cfg := map[string]any{
 		"providers": map[string]any{
 			// openai provider with custom apiBase → OpenAIProvider strips the
@@ -73,9 +80,7 @@ func writeNanoclawConfig() error {
 			},
 		},
 		"agents": map[string]any{
-			"defaults": map[string]any{
-				"model": "openai/" + model,
-			},
+			"defaults": agentDefaults,
 		},
 		"tools": map[string]any{
 			"restrictToWorkspace": false,
@@ -92,6 +97,34 @@ func writeNanoclawConfig() error {
 		return fmt.Errorf("create config dir %s: %w", configDir, err)
 	}
 	return os.WriteFile(filepath.Join(configDir, "config.json"), data, 0600)
+}
+
+// buildSystemPrompt combines the agent's custom system prompt (from
+// AGENT_SYSTEM_PROMPT env) with integration hints derived from other env vars.
+// Returns an empty string when neither is set.
+func buildSystemPrompt() string {
+	agentPrompt := strings.TrimSpace(os.Getenv("AGENT_SYSTEM_PROMPT"))
+
+	var integrationSections []string
+	if os.Getenv("GITHUB_TOKEN") != "" {
+		integrationSections = append(integrationSections, `## GitHub
+You have GitHub access via GITHUB_TOKEN. Use it proactively for repo tasks.
+- Clone:  git clone https://oauth2:$GITHUB_TOKEN@github.com/owner/repo
+- Push:   git remote set-url origin https://oauth2:$GITHUB_TOKEN@github.com/owner/repo && git push
+- Before committing: git config user.email "agent@shclop.local" && git config user.name "shclop-agent"
+- gh CLI: picks up GITHUB_TOKEN automatically`)
+	}
+
+	var parts []string
+	if agentPrompt != "" {
+		parts = append(parts, agentPrompt)
+	}
+	if len(integrationSections) > 0 {
+		parts = append(parts, "# Available integrations\n\n"+strings.Join(integrationSections, "\n\n")+
+			"\n\nDo not ask the user for credentials — they are already available in the environment.")
+	}
+
+	return strings.Join(parts, "\n\n")
 }
 
 // nanoclawConfigDir returns a writable directory for nano-claw config.

@@ -18,6 +18,9 @@ type AgentPodRequest struct {
 	LLMGatewayBaseURL   string
 	LLMModel            string
 	LLMGatewaySecretRef *SecretKeyRef
+	// SystemPrompt is the agent's custom system prompt. Injected as
+	// AGENT_SYSTEM_PROMPT so nanoclaw can include it in its config.
+	SystemPrompt string
 	// IntegrationEnv contains additional environment variables from
 	// integrations (e.g. GITHUB_TOKEN). These are injected into the
 	// container spec as plain env vars.
@@ -96,6 +99,9 @@ func BuildAgentPodSpec(req AgentPodRequest) AgentPodSpec {
 		env["LLM_GATEWAY_MODEL"] = req.LLMModel
 	}
 
+	if req.SystemPrompt != "" {
+		env["AGENT_SYSTEM_PROMPT"] = req.SystemPrompt
+	}
 	for k, v := range req.IntegrationEnv {
 		env[k] = v
 	}
