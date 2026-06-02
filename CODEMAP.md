@@ -360,26 +360,6 @@
   29:type IdentityProvider interface {
   34:type OrganizationMapper interface {
 
-### internal/integrations/github_test.go
-  10:func TestGitHubProviderValidatePAT_Success(t *testing.T) {
-  63:func TestGitHubProviderValidatePAT_NonOKStatus(t *testing.T) {
-  81:func TestGitHubProviderValidatePAT_NetworkError(t *testing.T) {
-  108:func TestGitHubProviderBuildRuntimeEnv(t *testing.T) {
-  119:func TestGitHubProviderValidatePAT_DefaultBaseURL(t *testing.T) {
-
-### internal/integrations/github.go
-  10:const gitHubDefaultBaseURL = "https://api.github.com"
-  14:type GitHubProvider struct {
-  21:type GitHubProviderConfig struct {
-  29:func NewGitHubProvider(config GitHubProviderConfig) *GitHubProvider {
-  48:func (p *GitHubProvider) ValidatePAT(ctx context.Context, token string) (ValidationResult, error) {
-  87:func (p *GitHubProvider) BuildRuntimeEnv(token string) map[string]string {
-  94:func (p *GitHubProvider) ProviderID() string {
-
-### internal/integrations/provider.go
-  8:type ValidationResult struct {
-  17:type Provider interface {
-
 ### internal/integrations/secretbox_test.go
   8:func TestSecretBoxRoundTrip(t *testing.T) {
   32:func TestSecretBoxDifferentKeys(t *testing.T) {
