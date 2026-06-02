@@ -1,0 +1,44 @@
+{{- $fullname := include "shclop.fullname" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-plugins-seed
+  labels:
+    {{- include "shclop.labels" . | nindent 4 }}
+data:
+  github.yaml: |
+    apiVersion: shclop.io/v1alpha1
+    kind: IntegrationPlugin
+    metadata:
+      name: github
+    spec:
+      id: github
+      display_name: GitHub
+      description: Connect a GitHub personal access token to expose gh CLI and MCP tools in agent runtime.
+      kind: http_template
+      scopes_supported: [user]
+      auth:
+        type: pat_token
+        fields:
+          - name: token
+            label: Personal Access Token
+            secret: true
+            placeholder: "ghp_..."
+            help_url: "https://github.com/settings/tokens"
+      validate:
+        http:
+          method: GET
+          url: "https://api.github.com/user"
+          headers:
+            Authorization: "Bearer {{ "{{" }}.Token{{ "}}" }}"
+            User-Agent: "shclop/1.0"
+          success_status: [200]
+          extract:
+            external_account_id: ".id"
+            external_login: ".login"
+            account_type: ".type"
+          timeout: 5s
+      contributions:
+        env:
+          GITHUB_TOKEN: "{{ "{{" }}.Token{{ "}}" }}"
+        mcp_servers: []

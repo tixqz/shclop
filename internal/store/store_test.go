@@ -133,6 +133,107 @@ func TestMemoryStore_AgentIntegration(t *testing.T) {
 	}
 }
 
+func TestMemoryStore_PluginManifestCRUD(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+
+	// Not found initially
+	_, err := s.GetPluginManifest(ctx, "github")
+	if err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound for missing manifest, got %v", err)
+	}
+
+	// Insert
+	pm := domain.PluginManifest{
+		ID:      "github",
+		YAML:    "spec: {id: github}",
+		Enabled: true,
+	}
+	saved, err := s.UpsertPluginManifest(ctx, pm)
+	if err != nil {
+		t.Fatalf("UpsertPluginManifest insert: %v", err)
+	}
+	if saved.Revision != 1 {
+		t.Fatalf("expected revision 1, got %d", saved.Revision)
+	}
+	if saved.CreatedAt.IsZero() || saved.UpdatedAt.IsZero() {
+		t.Fatal("expected timestamps to be set on insert")
+	}
+	createdAt := saved.CreatedAt
+
+	// Get
+	got, err := s.GetPluginManifest(ctx, "github")
+	if err != nil {
+		t.Fatalf("GetPluginManifest: %v", err)
+	}
+	if got.YAML != "spec: {id: github}" {
+		t.Fatalf("unexpected YAML: %q", got.YAML)
+	}
+
+	// Update — revision should increment, CreatedAt unchanged
+	time.Sleep(time.Millisecond)
+	pm.YAML = "spec: {id: github, v: 2}"
+	updated, err := s.UpsertPluginManifest(ctx, pm)
+	if err != nil {
+		t.Fatalf("UpsertPluginManifest update: %v", err)
+	}
+	if updated.Revision != 2 {
+		t.Fatalf("expected revision 2 after update, got %d", updated.Revision)
+	}
+	if !updated.CreatedAt.Equal(createdAt) {
+		t.Fatal("expected CreatedAt to remain unchanged on upsert")
+	}
+	if updated.YAML != "spec: {id: github, v: 2}" {
+		t.Fatalf("unexpected YAML after update: %q", updated.YAML)
+	}
+
+	// List all
+	list, err := s.ListPluginManifests(ctx, false)
+	if err != nil {
+		t.Fatalf("ListPluginManifests: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 manifest, got %d", len(list))
+	}
+
+	// List enabled only — should still return 1
+	enabledList, err := s.ListPluginManifests(ctx, true)
+	if err != nil {
+		t.Fatalf("ListPluginManifests enabled: %v", err)
+	}
+	if len(enabledList) != 1 {
+		t.Fatalf("expected 1 enabled manifest, got %d", len(enabledList))
+	}
+
+	// Disable and list enabled — should return 0
+	pm.Enabled = false
+	_, err = s.UpsertPluginManifest(ctx, pm)
+	if err != nil {
+		t.Fatalf("UpsertPluginManifest disable: %v", err)
+	}
+	disabledList, err := s.ListPluginManifests(ctx, true)
+	if err != nil {
+		t.Fatalf("ListPluginManifests after disable: %v", err)
+	}
+	if len(disabledList) != 0 {
+		t.Fatalf("expected 0 enabled manifests after disable, got %d", len(disabledList))
+	}
+
+	// Delete
+	if err := s.DeletePluginManifest(ctx, "github"); err != nil {
+		t.Fatalf("DeletePluginManifest: %v", err)
+	}
+	_, err = s.GetPluginManifest(ctx, "github")
+	if err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+
+	// Delete non-existent
+	if err := s.DeletePluginManifest(ctx, "nonexistent"); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound for missing manifest delete, got %v", err)
+	}
+}
+
 func TestMemoryStore_IntegrationConnection_UpsertRevisionAutoIncrement(t *testing.T) {
 	s := NewMemory()
 	ctx := context.Background()

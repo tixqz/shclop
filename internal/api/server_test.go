@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/mipopov/shclop/internal/config"
-	"github.com/mipopov/shclop/internal/integrations"
 )
 
 func TestHealthz(t *testing.T) {
@@ -888,7 +887,8 @@ func TestStopAgentRevokesRuntimeToken(t *testing.T) {
 // --- Integrations ---
 
 func TestIntegrations_ListReturnsProviders(t *testing.T) {
-	server := newTestServer()
+	// Use a server with the GitHub plugin manifest loaded (validate URL does not matter for listing).
+	server := newTestServerWithGitHub(t, "http://localhost:0/user")
 	token := loginAsAdmin(t, server)
 
 	resp := doJSON(t, server, http.MethodGet, "/api/integrations", nil, token)
@@ -920,10 +920,7 @@ func TestIntegrations_ListReturnsProviders(t *testing.T) {
 }
 
 func TestIntegrations_ConnectAndDisconnectGitHub(t *testing.T) {
-	server := newTestServer()
-	token := loginAsAdmin(t, server)
-
-	// Start a test GitHub server that returns 200 for "ghp_test_valid" and 401 for anything else.
+	// Start the mock GitHub server FIRST so we can point the manifest at it.
 	githubCalled := false
 	githubServer := newTestGitHubServer(t, func(w http.ResponseWriter, r *http.Request) {
 		githubCalled = true
@@ -939,8 +936,8 @@ func TestIntegrations_ConnectAndDisconnectGitHub(t *testing.T) {
 	})
 	defer githubServer.Close()
 
-	// Override the GitHub provider with our test server
-	server.integrations.RegisterProvider(newTestGitHubProvider(t, githubServer.URL))
+	server := newTestServerWithGitHub(t, githubServer.URL+"/user")
+	token := loginAsAdmin(t, server)
 
 	// Connect with valid token
 	connectResp := doJSON(t, server, http.MethodPut, "/api/integrations/github/connection", map[string]string{
@@ -1045,7 +1042,15 @@ func TestIntegrations_RequiresAuth(t *testing.T) {
 }
 
 func TestIntegrations_AgentToggleEnforceOwnership(t *testing.T) {
-	server := newTestServer()
+	// Create the mock GitHub server FIRST so we can bake its URL into the plugin manifest.
+	githubValidateServer := newTestGitHubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"login":"alice","id":999,"type":"User"}`))
+	})
+	defer githubValidateServer.Close()
+
+	server := newTestServerWithGitHub(t, githubValidateServer.URL+"/user")
 	adminToken := loginAsAdmin(t, server)
 
 	// Create a non-admin user via admin API
@@ -1081,15 +1086,7 @@ func TestIntegrations_AgentToggleEnforceOwnership(t *testing.T) {
 	}
 	agentID := assertJSONField(t, created.Body.Bytes(), "id", "")
 
-	// Connect GitHub as alice (using test server)
-	githubServer := newTestGitHubServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"login":"alice","id":999,"type":"User"}`))
-	})
-	defer githubServer.Close()
-	server.integrations.RegisterProvider(newTestGitHubProvider(t, githubServer.URL))
-
+	// Connect GitHub as alice (the validate server is already baked into the server manifest).
 	connectResp := doJSON(t, server, http.MethodPut, "/api/integrations/github/connection", map[string]string{
 		"token": "ghp_alice_valid",
 	}, aliceToken)
@@ -1174,14 +1171,6 @@ func newTestGitHubServer(t *testing.T, handler func(w http.ResponseWriter, r *ht
 	}))
 }
 
-func newTestGitHubProvider(t *testing.T, baseURL string) *integrations.GitHubProvider {
-	t.Helper()
-	return integrations.NewGitHubProvider(integrations.GitHubProviderConfig{
-		BaseURL:    baseURL,
-		HTTPClient: &http.Client{},
-	})
-}
-
 // --- Helpers ---
 
 func newTestServer() *Server {
@@ -1194,6 +1183,69 @@ func newTestServerWithConfig(cfg config.Config) *Server {
 		panic(err)
 	}
 	return server
+}
+
+// newTestServerWithGitHub creates a test server that has a GitHub integration plugin
+// manifest loaded. validateURL should be the full URL (with path) used to validate tokens,
+// e.g. "http://127.0.0.1:PORT/user".
+func newTestServerWithGitHub(t *testing.T, validateURL string) *Server {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "shclop-test-plugins-*")
+	if err != nil {
+		t.Fatalf("create temp plugin dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	content := githubManifestYAML(validateURL)
+	if err := os.WriteFile(filepath.Join(dir, "github.yaml"), []byte(content), 0644); err != nil {
+		t.Fatalf("write github manifest: %v", err)
+	}
+	cfg := config.Config{
+		Store:          "inmemory",
+		SandboxProvider: "mock",
+		PluginDir:      dir,
+	}
+	return newTestServerWithConfig(cfg)
+}
+
+// githubManifestYAML returns the YAML for a github integration plugin manifest
+// pointing at the given validate URL.
+func githubManifestYAML(validateURL string) string {
+	return `apiVersion: shclop.io/v1alpha1
+kind: IntegrationPlugin
+metadata:
+  name: github
+spec:
+  id: github
+  display_name: GitHub
+  description: Connect a GitHub PAT
+  kind: http_template
+  scopes_supported: [user]
+  auth:
+    type: pat_token
+    fields:
+      - name: token
+        label: Personal Access Token
+        secret: true
+        placeholder: "ghp_..."
+  validate:
+    http:
+      method: GET
+      url: "` + validateURL + `"
+      headers:
+        Authorization: "Bearer {{.Token}}"
+        User-Agent: "shclop/1.0"
+      success_status: [200]
+      extract:
+        external_account_id: ".id"
+        external_login: ".login"
+        account_type: ".type"
+      timeout: 5s
+  contributions:
+    env:
+      GITHUB_TOKEN: "{{.Token}}"
+    mcp_servers: []
+`
 }
 
 func loginAsAdmin(t *testing.T, server *Server) string {

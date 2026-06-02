@@ -57,6 +57,19 @@ export type AdminOverview = {
   };
 };
 
+export type FormField = {
+  name: string;
+  label: string;
+  secret: boolean;
+  placeholder?: string;
+  help_url?: string;
+};
+
+export type MCPServerRef = {
+  name: string;
+  kind: 'ref' | 'external';
+};
+
 export type IntegrationSummary = {
   providers: IntegrationProvider[];
 };
@@ -67,6 +80,10 @@ export type IntegrationProvider = {
   connected: boolean;
   connection?: IntegrationConnection;
   agent_bindings: AgentIntegrationBinding[];
+  auth_kind?: string;
+  form_fields?: FormField[];
+  mcp_servers?: MCPServerRef[];
+  description?: string;
 };
 
 export type IntegrationConnection = {
@@ -245,25 +262,29 @@ export async function listIntegrations(): Promise<IntegrationSummary> {
   return apiFetch<IntegrationSummary>('/api/integrations');
 }
 
-export async function connectGitHub(token: string): Promise<IntegrationConnection> {
-  return apiFetch<IntegrationConnection>('/api/integrations/github/connection', {
+export async function connectIntegration(
+  providerId: string,
+  fields: Record<string, string>,
+): Promise<void> {
+  return apiFetch<void>(`/api/integrations/${encodeURIComponent(providerId)}/connection`, {
     method: 'PUT',
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ fields }),
   });
 }
 
-export async function disconnectGitHub(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>('/api/integrations/github/connection', {
+export async function disconnectIntegration(providerId: string): Promise<void> {
+  return apiFetch<void>(`/api/integrations/${encodeURIComponent(providerId)}/connection`, {
     method: 'DELETE',
   });
 }
 
-export async function setAgentGitHubIntegration(
+export async function setAgentIntegration(
   agentId: string,
+  providerId: string,
   enabled: boolean,
 ): Promise<AgentIntegrationBinding> {
   return apiFetch<AgentIntegrationBinding>(
-    `/api/agents/${encodeURIComponent(agentId)}/integrations/github`,
+    `/api/agents/${encodeURIComponent(agentId)}/integrations/${encodeURIComponent(providerId)}`,
     {
       method: 'PUT',
       body: JSON.stringify({ enabled }),

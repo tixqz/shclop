@@ -41,9 +41,19 @@ type Store interface {
 	UpsertIntegrationConnection(ctx context.Context, connection domain.IntegrationConnection) (domain.IntegrationConnection, error)
 	GetIntegrationConnection(ctx context.Context, userID, providerID string) (domain.IntegrationConnection, error)
 	DeleteIntegrationConnection(ctx context.Context, userID, providerID string) error
+	// ListUserIntegrationProviderIDs returns the distinct provider IDs for which
+	// the given user has a stored connection (scope=user). Used to surface orphaned
+	// credentials when the plugin is no longer in the registry.
+	ListUserIntegrationProviderIDs(ctx context.Context, userID string) ([]string, error)
 	UpsertAgentIntegration(ctx context.Context, agentID, providerID string, enabled bool, revision int64, status string) (domain.AgentIntegration, error)
 	ListAgentIntegrations(ctx context.Context, agentID string) ([]domain.AgentIntegration, error)
 	GetAgentIntegration(ctx context.Context, agentID, providerID string) (domain.AgentIntegration, error)
+
+	// Plugin Manifests
+	ListPluginManifests(ctx context.Context, enabledOnly bool) ([]domain.PluginManifest, error)
+	GetPluginManifest(ctx context.Context, id string) (domain.PluginManifest, error)
+	UpsertPluginManifest(ctx context.Context, m domain.PluginManifest) (domain.PluginManifest, error)
+	DeletePluginManifest(ctx context.Context, id string) error
 
 	// Bootstrap
 	BootstrapAdmin(ctx context.Context, username, passwordHash string) error
@@ -66,12 +76,16 @@ type Memory struct {
 	gatewayKey     string
 	gatewayUpdated time.Time
 
-	integrations       []domain.IntegrationConnection
-	agentIntegrations  []domain.AgentIntegration
+	integrations      []domain.IntegrationConnection
+	agentIntegrations []domain.AgentIntegration
+	pluginManifests   map[string]domain.PluginManifest
 }
 
 func NewMemory() *Memory {
-	return &Memory{passwordHashes: make(map[string]string)}
+	return &Memory{
+		passwordHashes:  make(map[string]string),
+		pluginManifests: make(map[string]domain.PluginManifest),
+	}
 }
 
 // --- Users ---
@@ -414,13 +428,15 @@ func (m *Memory) UpsertIntegrationConnection(ctx context.Context, connection dom
 
 	now := time.Now().UTC()
 
-	// Store secret in memory as-is (encrypted at rest by caller).
-	// The memory store keeps the protected value in memory intentionally;
-	// the encrypted form is what was passed in.
+	if connection.Scope == "" {
+		connection.Scope = "user"
+	}
+	if connection.ScopeID == "" {
+		connection.ScopeID = connection.UserID
+	}
 
 	for i, c := range m.integrations {
 		if c.ProviderID == connection.ProviderID && c.UserID == connection.UserID {
-			// Update existing
 			revision := c.Revision + 1
 			if connection.Revision > revision {
 				revision = connection.Revision
@@ -430,13 +446,14 @@ func (m *Memory) UpsertIntegrationConnection(ctx context.Context, connection dom
 			m.integrations[i].AccountType = connection.AccountType
 			m.integrations[i].Status = connection.Status
 			m.integrations[i].Secret = connection.Secret
+			m.integrations[i].Scope = connection.Scope
+			m.integrations[i].ScopeID = connection.ScopeID
 			m.integrations[i].Revision = revision
 			m.integrations[i].UpdatedAt = now
 			return m.integrations[i], nil
 		}
 	}
 
-	// Insert new
 	conn := connection
 	if conn.Revision == 0 {
 		conn.Revision = 1
@@ -459,6 +476,25 @@ func (m *Memory) GetIntegrationConnection(ctx context.Context, userID, providerI
 		}
 	}
 	return domain.IntegrationConnection{}, ErrNotFound
+}
+
+func (m *Memory) ListUserIntegrationProviderIDs(ctx context.Context, userID string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := make(map[string]struct{})
+	var out []string
+	for _, c := range m.integrations {
+		if c.UserID == userID && (c.Scope == "" || c.Scope == "user") {
+			if _, already := seen[c.ProviderID]; !already {
+				seen[c.ProviderID] = struct{}{}
+				out = append(out, c.ProviderID)
+			}
+		}
+	}
+	return out, nil
 }
 
 func (m *Memory) DeleteIntegrationConnection(ctx context.Context, userID, providerID string) error {
@@ -554,6 +590,73 @@ func (m *Memory) GetAgentIntegration(ctx context.Context, agentID, providerID st
 		}
 	}
 	return domain.AgentIntegration{}, ErrNotFound
+}
+
+// --- Plugin Manifests ---
+
+func (m *Memory) ListPluginManifests(ctx context.Context, enabledOnly bool) ([]domain.PluginManifest, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.PluginManifest
+	for _, pm := range m.pluginManifests {
+		if enabledOnly && !pm.Enabled {
+			continue
+		}
+		out = append(out, pm)
+	}
+	return out, nil
+}
+
+func (m *Memory) GetPluginManifest(ctx context.Context, id string) (domain.PluginManifest, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.PluginManifest{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pm, ok := m.pluginManifests[id]
+	if !ok {
+		return domain.PluginManifest{}, ErrNotFound
+	}
+	return pm, nil
+}
+
+func (m *Memory) UpsertPluginManifest(ctx context.Context, manifest domain.PluginManifest) (domain.PluginManifest, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.PluginManifest{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	existing, ok := m.pluginManifests[manifest.ID]
+	if ok {
+		existing.YAML = manifest.YAML
+		existing.Enabled = manifest.Enabled
+		existing.Revision = existing.Revision + 1
+		existing.UpdatedAt = now
+		m.pluginManifests[manifest.ID] = existing
+		return existing, nil
+	}
+	manifest.Revision = 1
+	manifest.CreatedAt = now
+	manifest.UpdatedAt = now
+	m.pluginManifests[manifest.ID] = manifest
+	return manifest, nil
+}
+
+func (m *Memory) DeletePluginManifest(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.pluginManifests[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.pluginManifests, id)
+	return nil
 }
 
 // --- Bootstrap ---

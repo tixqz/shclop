@@ -409,18 +409,25 @@ func (p *Postgres) UpsertLLMGatewaySettings(ctx context.Context, enabled bool, b
 // --- Integrations: Connections ---
 
 func (p *Postgres) UpsertIntegrationConnection(ctx context.Context, connection domain.IntegrationConnection) (domain.IntegrationConnection, error) {
+	if connection.Scope == "" {
+		connection.Scope = "user"
+	}
+	if connection.ScopeID == "" {
+		connection.ScopeID = connection.UserID
+	}
 	now := time.Now().UTC()
 	var c domain.IntegrationConnection
 	err := p.db.QueryRowContext(ctx,
-		`insert into integration_connections (provider_id, user_id, external_account_id, external_login, account_type, status, secret, revision, created_at, updated_at)
-		 values ($1, $2, $3, $4, $5, $6, $7, coalesce(nullif($8, 0), 1), $9, $9)
-		 on conflict (provider_id, user_id) do update set
-		   external_account_id = $3, external_login = $4, account_type = $5, status = $6, secret = $7,
-		   revision = integration_connections.revision + 1, updated_at = $9
-		 returning provider_id, user_id, external_account_id, external_login, account_type, status, secret, revision, created_at, updated_at`,
-		connection.ProviderID, connection.UserID, connection.ExternalAccountID, connection.ExternalLogin,
+		`insert into integration_connections (provider_id, user_id, scope, scope_id, external_account_id, external_login, account_type, status, secret, revision, created_at, updated_at)
+		 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, coalesce(nullif($10, 0), 1), $11, $11)
+		 on conflict (provider_id, scope, scope_id) do update set
+		   external_account_id = $5, external_login = $6, account_type = $7, status = $8, secret = $9,
+		   revision = integration_connections.revision + 1, updated_at = $11
+		 returning provider_id, user_id, scope, scope_id, external_account_id, external_login, account_type, status, secret, revision, created_at, updated_at`,
+		connection.ProviderID, connection.UserID, connection.Scope, connection.ScopeID,
+		connection.ExternalAccountID, connection.ExternalLogin,
 		connection.AccountType, connection.Status, connection.Secret, connection.Revision, now,
-	).Scan(&c.ProviderID, &c.UserID, &c.ExternalAccountID, &c.ExternalLogin, &c.AccountType,
+	).Scan(&c.ProviderID, &c.UserID, &c.Scope, &c.ScopeID, &c.ExternalAccountID, &c.ExternalLogin, &c.AccountType,
 		&c.Status, &c.Secret, &c.Revision, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return domain.IntegrationConnection{}, fmt.Errorf("upsert integration connection: %w", err)
@@ -431,10 +438,10 @@ func (p *Postgres) UpsertIntegrationConnection(ctx context.Context, connection d
 func (p *Postgres) GetIntegrationConnection(ctx context.Context, userID, providerID string) (domain.IntegrationConnection, error) {
 	var c domain.IntegrationConnection
 	err := p.db.QueryRowContext(ctx,
-		`select provider_id, user_id, external_account_id, external_login, account_type, status, secret, revision, created_at, updated_at
-		 from integration_connections where user_id = $1 and provider_id = $2`,
-		userID, providerID,
-	).Scan(&c.ProviderID, &c.UserID, &c.ExternalAccountID, &c.ExternalLogin, &c.AccountType,
+		`select provider_id, user_id, scope, scope_id, external_account_id, external_login, account_type, status, secret, revision, created_at, updated_at
+		 from integration_connections where provider_id = $1 and scope = 'user' and scope_id = $2`,
+		providerID, userID,
+	).Scan(&c.ProviderID, &c.UserID, &c.Scope, &c.ScopeID, &c.ExternalAccountID, &c.ExternalLogin, &c.AccountType,
 		&c.Status, &c.Secret, &c.Revision, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return domain.IntegrationConnection{}, ErrNotFound
@@ -445,15 +452,34 @@ func (p *Postgres) GetIntegrationConnection(ctx context.Context, userID, provide
 	return c, nil
 }
 
+func (p *Postgres) ListUserIntegrationProviderIDs(ctx context.Context, userID string) ([]string, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT DISTINCT provider_id FROM integration_connections
+		 WHERE scope = 'user' AND scope_id = $1
+		 ORDER BY provider_id`,
+		userID)
+	if err != nil {
+		return nil, fmt.Errorf("list user integration provider ids: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (p *Postgres) DeleteIntegrationConnection(ctx context.Context, userID, providerID string) error {
 	_, err := p.db.ExecContext(ctx,
-		`delete from integration_connections where user_id = $1 and provider_id = $2`,
-		userID, providerID)
+		`delete from integration_connections where provider_id = $1 and scope = 'user' and scope_id = $2`,
+		providerID, userID)
 	if err != nil {
 		return fmt.Errorf("delete integration connection: %w", err)
 	}
-	// Also cascade-delete agent integrations for this provider (even though
-	// we have no FK to agent_connections, clean up).
 	_, _ = p.db.ExecContext(ctx,
 		`delete from agent_integrations where provider_id = $1 and agent_id in (
 		   select id from agents where owner_user_id = $2
@@ -516,6 +542,72 @@ func (p *Postgres) GetAgentIntegration(ctx context.Context, agentID, providerID 
 		return domain.AgentIntegration{}, err
 	}
 	return ai, nil
+}
+
+// --- Plugin Manifests ---
+
+func (p *Postgres) ListPluginManifests(ctx context.Context, enabledOnly bool) ([]domain.PluginManifest, error) {
+	query := `select id, yaml, enabled, revision, created_at, updated_at from plugin_manifests`
+	if enabledOnly {
+		query += ` where enabled = true`
+	}
+	query += ` order by updated_at asc, id asc`
+	rows, err := p.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.PluginManifest
+	for rows.Next() {
+		var pm domain.PluginManifest
+		if err := rows.Scan(&pm.ID, &pm.YAML, &pm.Enabled, &pm.Revision, &pm.CreatedAt, &pm.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, pm)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) GetPluginManifest(ctx context.Context, id string) (domain.PluginManifest, error) {
+	var pm domain.PluginManifest
+	err := p.db.QueryRowContext(ctx,
+		`select id, yaml, enabled, revision, created_at, updated_at from plugin_manifests where id = $1`, id,
+	).Scan(&pm.ID, &pm.YAML, &pm.Enabled, &pm.Revision, &pm.CreatedAt, &pm.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return domain.PluginManifest{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.PluginManifest{}, err
+	}
+	return pm, nil
+}
+
+func (p *Postgres) UpsertPluginManifest(ctx context.Context, m domain.PluginManifest) (domain.PluginManifest, error) {
+	var pm domain.PluginManifest
+	err := p.db.QueryRowContext(ctx,
+		`insert into plugin_manifests (id, yaml, enabled, revision, created_at, updated_at)
+		 values ($1, $2, $3, 1, now(), now())
+		 on conflict (id) do update set
+		   yaml = EXCLUDED.yaml, enabled = EXCLUDED.enabled,
+		   revision = plugin_manifests.revision + 1, updated_at = now()
+		 returning id, yaml, enabled, revision, created_at, updated_at`,
+		m.ID, m.YAML, m.Enabled,
+	).Scan(&pm.ID, &pm.YAML, &pm.Enabled, &pm.Revision, &pm.CreatedAt, &pm.UpdatedAt)
+	if err != nil {
+		return domain.PluginManifest{}, fmt.Errorf("upsert plugin manifest: %w", err)
+	}
+	return pm, nil
+}
+
+func (p *Postgres) DeletePluginManifest(ctx context.Context, id string) error {
+	res, err := p.db.ExecContext(ctx, `delete from plugin_manifests where id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete plugin manifest: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // --- Bootstrap ---

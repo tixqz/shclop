@@ -44,6 +44,11 @@ type Config struct {
 	// Integrations
 	IntegrationEncryptionKey string
 
+	// Plugin system
+	PluginDir          string // directory for file-based plugin manifests
+	PluginPollInterval string // DB poll interval for DBRegistry
+	KubeconfigPath     string // optional path to kubeconfig; empty → in-cluster
+
 	// Observability
 	GrafanaURL string
 }
@@ -86,6 +91,11 @@ func Default() Config {
 
 		// Integrations
 		IntegrationEncryptionKey: os.Getenv("SHCLOP_INTEGRATION_ENCRYPTION_KEY"),
+
+		// Plugin system
+		PluginDir:          env("SHCLOP_PLUGIN_DIR", "/etc/shclop/plugins.d/"),
+		PluginPollInterval: env("SHCLOP_PLUGIN_POLL_INTERVAL", "10s"),
+		KubeconfigPath:     os.Getenv("KUBECONFIG"),
 
 		// Observability
 		GrafanaURL: os.Getenv("SHCLOP_GRAFANA_URL"),

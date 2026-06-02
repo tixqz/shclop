@@ -122,6 +122,12 @@ spec:
               value: {{ .Values.agentRuntime.images.openclaw | quote }}
             - name: SHCLOP_RUNTIME_IMAGE_NANOCLAW
               value: {{ .Values.agentRuntime.images.nanoclaw | quote }}
+            - name: SHCLOP_PLUGIN_DIR
+              value: /etc/shclop/plugins.d
+          volumeMounts:
+            - name: plugin-manifests
+              mountPath: /etc/shclop/plugins.d
+              readOnly: true
           ports:
             - containerPort: 8080
               name: http
@@ -141,3 +147,6 @@ spec:
         - name: migration-sql
           configMap:
             name: {{ $fullname }}-migration
+        - name: plugin-manifests
+          configMap:
+            name: {{ $fullname }}-plugins-seed

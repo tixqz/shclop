@@ -22,9 +22,12 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/mipopov/shclop/internal/auth"
 	"github.com/mipopov/shclop/internal/config"
+	"github.com/mipopov/shclop/internal/controllers"
 	"github.com/mipopov/shclop/internal/domain"
 	"github.com/mipopov/shclop/internal/gateway"
 	"github.com/mipopov/shclop/internal/integrations"
+	k8sapi "github.com/mipopov/shclop/internal/k8s"
+	"github.com/mipopov/shclop/internal/plugins"
 	"github.com/mipopov/shclop/internal/sandbox"
 	"github.com/mipopov/shclop/internal/store"
 	"github.com/prometheus/client_golang/prometheus"
@@ -61,6 +64,8 @@ type Server struct {
 	handler      http.Handler
 	metrics      *MetricsCollectors
 	bootstrapMu  sync.Once
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 type MetricsCollectors struct {
@@ -186,15 +191,60 @@ func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("integrations secret box: %w", err)
 	}
-	integrationService := integrations.NewService(openedStore, secretBox, logger)
-	// Register providers
-	integrationService.RegisterProvider(integrations.NewGitHubProvider(integrations.GitHubProviderConfig{}))
 
 	if cfg.Dev || cfg.Store == "inmemory" || cfg.SandboxProvider == "mock" {
 		if logger != nil {
 			logger.Info("integrations: using dev mode — encryption key is derived; set SHCLOP_INTEGRATION_ENCRYPTION_KEY for production")
 		}
 	}
+
+	// Server lifetime context — used by background goroutines (registries, controllers).
+	serverCtx, serverCancel := context.WithCancel(context.Background())
+
+	// Plugin registry sources — highest precedence first when k8s is active.
+	fileReg := plugins.NewFileRegistry(cfg.PluginDir, logger)
+	_ = fileReg.Run(serverCtx) // synchronous initial scan via sync.Once
+
+	dbPollInterval, _ := plugins.ParseTimeout(cfg.PluginPollInterval)
+	dbReg := plugins.NewDBRegistry(openedStore, dbPollInterval, logger)
+	_ = dbReg.Run(serverCtx) // synchronous initial poll
+
+	sources := []plugins.Registry{dbReg, fileReg}
+
+	var mcpResolver *plugins.MCPResolver
+	if cfg.SandboxProvider == "kubernetes" {
+		k8sClient, k8sErr := k8sapi.NewClient(cfg.KubeconfigPath, cfg.KubernetesNamespace)
+		if k8sErr != nil {
+			if logger != nil {
+				logger.Warn("kubernetes plugin sources disabled", "err", k8sErr)
+			}
+		} else {
+			factory := k8sapi.NewFactory(k8sClient, cfg.KubernetesNamespace, 0)
+			ipInformer := factory.IntegrationPluginInformer()
+			mcpInformer := factory.MCPServerInformer()
+
+			crdReg := plugins.NewCRDRegistry(ipInformer, logger)
+			_ = crdReg.Run(serverCtx) // register event handlers (no-op initial sync; informer not started yet)
+
+			// CRD has highest precedence — prepend.
+			sources = append([]plugins.Registry{crdReg}, sources...)
+
+			mcpResolver = plugins.NewMCPResolver(mcpInformer, cfg.KubernetesNamespace, logger)
+
+			// Start informer factory and controller.
+			stopCh := make(chan struct{})
+			go func() { <-serverCtx.Done(); close(stopCh) }()
+			factory.Start(stopCh)
+
+			mcpController := controllers.NewMCPServerController(k8sClient, mcpInformer, cfg.KubernetesNamespace, logger)
+			go mcpController.Run(serverCtx, 2)
+		}
+	}
+
+	merged := plugins.NewMerged(logger, sources...)
+	_ = merged.Run(serverCtx) // synchronous rebuild from already-populated sources
+
+	integrationService := integrations.NewService(openedStore, secretBox, merged, mcpResolver, logger)
 
 	server := &Server{
 		cfg:          cfg,
@@ -206,6 +256,8 @@ func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
 		tokens:       map[string]string{},
 		logger:       logger,
 		metrics:      metrics,
+		ctx:          serverCtx,
+		cancel:       serverCancel,
 	}
 	server.handler = server.withMetrics(server.routes())
 	return server, nil
@@ -391,6 +443,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/admin/models/", s.handleAdminModel)
 	mux.HandleFunc("/api/admin/llm-gateway", s.handleAdminLLMGateway)
 	mux.HandleFunc("/api/admin/overview", s.handleAdminOverview)
+	mux.HandleFunc("/api/admin/plugins", s.handleAdminPlugins)
+	mux.HandleFunc("/api/admin/plugins/", s.handleAdminPlugin)
 
 	// Activity
 	mux.HandleFunc("/api/activity", s.handleActivity)
@@ -691,43 +745,29 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 		return
 	}
 
-	// Resolve integration environment variables for enabled agent integrations.
-	integrationEnv := make(map[string]string)
-	agentIntegrations, err := s.integrations.ListAgentIntegrations(r.Context(), agentID)
+	// Resolve integration environment variables and MCP config for enabled agent integrations.
+	resolution, err := s.integrations.ResolveAgentRuntime(r.Context(), user.ID, agentID)
 	if err != nil {
-		s.writeStoreError(w, err)
+		s.recordActivity("agent.start_failed", user.ID, agentID, fmt.Sprintf("integration resolution failed: %v", err), nil)
+		if _, updateErr := s.store.UpdateAgentError(r.Context(), agentID, err.Error()); updateErr != nil && s.logger != nil {
+			s.logger.Warn("failed to record agent error", "err", updateErr)
+		}
+		_, _ = s.store.UpdateAgentState(r.Context(), agentID, "idle")
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	for _, ai := range agentIntegrations {
-		if !ai.Enabled {
-			continue
+
+	integrationEnv := resolution.Env
+	if len(resolution.MCPServers) > 0 {
+		blob, jsonErr := json.Marshal(resolution.MCPServers)
+		if jsonErr != nil {
+			s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": jsonErr.Error()})
+			return
 		}
-		provider := s.integrations.Provider(ai.ProviderID)
-		if provider == nil {
-			continue
+		if integrationEnv == nil {
+			integrationEnv = map[string]string{}
 		}
-		token, err := s.integrations.DecryptToken(r.Context(), user.ID, ai.ProviderID)
-		if err != nil {
-			if s.logger != nil {
-				s.logger.Error("failed to decrypt integration token",
-					"agent_id", agentID,
-					"provider", ai.ProviderID,
-					"error", err,
-				)
-			}
-			continue
-		}
-		env := provider.BuildRuntimeEnv(token)
-		for k, v := range env {
-			integrationEnv[k] = v
-		}
-		// Ref: Do not log secrets — only log which integration was resolved.
-		if s.logger != nil {
-			s.logger.Info("integration env resolved for agent",
-				"agent_id", agentID,
-				"provider", ai.ProviderID,
-			)
-		}
+		integrationEnv["SHCLOP_MCP_CONFIG"] = string(blob)
 	}
 
 	secret, err := randomSecret()
@@ -925,19 +965,31 @@ func (s *Server) handleConnectIntegration(w http.ResponseWriter, r *http.Request
 	}
 
 	var request struct {
-		Token string `json:"token"`
+		Token  string            `json:"token,omitempty"`  // legacy: token-only body
+		Fields map[string]string `json:"fields,omitempty"` // new shape
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	if request.Token == "" {
-		http.Error(w, "token is required", http.StatusBadRequest)
+
+	fields := request.Fields
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	// Legacy fallback: if token field present in top-level and not overridden in fields
+	if request.Token != "" {
+		if _, ok := fields["token"]; !ok {
+			fields["token"] = request.Token
+		}
+	}
+	if len(fields) == 0 {
+		http.Error(w, "fields or token is required", http.StatusBadRequest)
 		return
 	}
 
-	// ValidatePAT with provider; only save on success
-	conn, err := s.integrations.Connect(r.Context(), user.ID, providerID, request.Token)
+	// Validate with plugin and only save on success.
+	conn, err := s.integrations.Connect(r.Context(), user.ID, providerID, fields)
 	if err != nil {
 		s.recordActivity("integration.connect_failed", user.ID, "", "integration connection failed", map[string]any{"provider": providerID, "error": err.Error()})
 		http.Error(w, "token validation failed: "+err.Error(), http.StatusBadRequest)
@@ -1448,6 +1500,134 @@ func (s *Server) handleAdminUpdateLLMGateway(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.writeJSON(w, http.StatusOK, settings)
+}
+
+// --- Admin Plugins ---
+
+func (s *Server) handleAdminPlugins(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleAdminListPlugins(w, r)
+	case http.MethodPost:
+		s.handleAdminUpsertPlugin(w, r, "")
+	default:
+		methodNotAllowed(w, "GET, POST")
+	}
+}
+
+func (s *Server) handleAdminPlugin(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/plugins/")
+	pluginID := strings.TrimSpace(strings.Trim(path, "/"))
+	if pluginID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		s.handleAdminUpsertPlugin(w, r, pluginID)
+	case http.MethodDelete:
+		s.handleAdminDeletePlugin(w, r, pluginID)
+	default:
+		methodNotAllowed(w, "PUT, DELETE")
+	}
+}
+
+func (s *Server) handleAdminListPlugins(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if user.Role != "admin" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	manifests, err := s.store.ListPluginManifests(r.Context(), false)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if manifests == nil {
+		manifests = []domain.PluginManifest{}
+	}
+	s.writeJSON(w, http.StatusOK, manifests)
+}
+
+func (s *Server) handleAdminUpsertPlugin(w http.ResponseWriter, r *http.Request, pathID string) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if user.Role != "admin" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	var request struct {
+		ID      string `json:"id"`
+		YAML    string `json:"yaml"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	// Parse and validate the manifest YAML.
+	m, err := plugins.ParseManifest([]byte(request.YAML))
+	if err != nil {
+		http.Error(w, "invalid manifest: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Determine the authoritative ID.
+	id := pathID
+	if id == "" {
+		id = request.ID
+	}
+	if id == "" {
+		id = m.Spec.ID
+	}
+
+	// Ensure body ID and manifest spec ID are consistent.
+	if request.ID != "" && request.ID != m.Spec.ID {
+		http.Error(w, "body id does not match manifest spec.id", http.StatusBadRequest)
+		return
+	}
+	if pathID != "" && pathID != m.Spec.ID {
+		http.Error(w, "path id does not match manifest spec.id", http.StatusBadRequest)
+		return
+	}
+
+	pm := domain.PluginManifest{
+		ID:      id,
+		YAML:    request.YAML,
+		Enabled: request.Enabled,
+	}
+	saved, err := s.store.UpsertPluginManifest(r.Context(), pm)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) handleAdminDeletePlugin(w http.ResponseWriter, r *http.Request, pluginID string) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if user.Role != "admin" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err := s.store.DeletePluginManifest(r.Context(), pluginID); errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Admin Overview ---

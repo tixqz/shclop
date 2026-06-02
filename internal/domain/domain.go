@@ -2,11 +2,23 @@ package domain
 
 import "time"
 
+// PluginManifest is a stored integration plugin definition managed via the DB registry.
+type PluginManifest struct {
+	ID        string
+	YAML      string
+	Enabled   bool
+	Revision  int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 // IntegrationConnection represents a user's connection to an external provider
 // (e.g., GitHub). The Secret field contains the encrypted credential token.
 type IntegrationConnection struct {
 	ProviderID        string    `json:"provider_id"`
 	UserID            string    `json:"user_id"`
+	Scope             string    `json:"-"` // "user" or "org"; not yet exposed on the API surface
+	ScopeID           string    `json:"-"` // equals UserID when Scope=="user"
 	ExternalAccountID string    `json:"external_account_id"` // e.g. GitHub user ID
 	ExternalLogin     string    `json:"external_login"`      // e.g. GitHub login/username
 	AccountType       string    `json:"account_type"`        // e.g. "User" or "Organization"
@@ -37,11 +49,32 @@ type IntegrationSummary struct {
 // ProviderSummary describes an available integration provider and the current
 // user's connection state.
 type ProviderSummary struct {
-	ProviderID    string                  `json:"provider_id"`
-	Name          string                  `json:"name"`
-	Connected     bool                    `json:"connected"`
-	Connection    *ConnectionMetadata     `json:"connection,omitempty"`
-	AgentBindings []AgentBindingSummary   `json:"agent_bindings"`
+	ProviderID    string                `json:"provider_id"`
+	Name          string                `json:"name"`
+	Connected     bool                  `json:"connected"`
+	Connection    *ConnectionMetadata   `json:"connection,omitempty"`
+	AgentBindings []AgentBindingSummary `json:"agent_bindings"`
+
+	// Fields populated from the plugin manifest.
+	AuthKind    string             `json:"auth_kind,omitempty"`
+	FormFields  []FormFieldSummary `json:"form_fields,omitempty"`
+	MCPServers  []MCPServerSummary `json:"mcp_servers,omitempty"`
+	Description string             `json:"description,omitempty"`
+}
+
+// FormFieldSummary describes a single credential field from the plugin manifest.
+type FormFieldSummary struct {
+	Name        string `json:"name"`
+	Label       string `json:"label"`
+	Secret      bool   `json:"secret"`
+	Placeholder string `json:"placeholder,omitempty"`
+	HelpURL     string `json:"help_url,omitempty"`
+}
+
+// MCPServerSummary is a brief description of an MCP server contributed by a plugin.
+type MCPServerSummary struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"` // "ref" | "external"
 }
 
 // ConnectionMetadata holds non-sensitive details about a connection.

@@ -17,9 +17,9 @@ import {
   stopAgent,
   deleteAgent,
   listIntegrations,
-  connectGitHub,
-  disconnectGitHub,
-  setAgentGitHubIntegration,
+  connectIntegration,
+  disconnectIntegration,
+  setAgentIntegration,
   listModels,
   adminListUsers,
   adminCreateUser,
@@ -119,12 +119,15 @@ export default function App() {
   // integrations
   const [integrationProviders, setIntegrationProviders] = useState<IntegrationProvider[]>([]);
   const [integrationsLoading, setIntegrationsLoading] = useState(false);
-  const [integrationToken, setIntegrationToken] = useState('');
+  // fieldValues holds the current form field values keyed by field name for the active provider form
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [integrationSaving, setIntegrationSaving] = useState(false);
   const [integrationAction, setIntegrationAction] = useState('');
   const [integrationsView, setIntegrationsView] = useState<IntegrationsView>('list');
   const [addStep, setAddStep] = useState<AddStep>('picker');
   const [detailProviderId, setDetailProviderId] = useState('');
+  // pickedProviderId tracks which provider was selected in the picker step
+  const [pickedProviderId, setPickedProviderId] = useState('');
 
   // chat
   const [chatText, setChatText] = useState('');
@@ -169,11 +172,6 @@ export default function App() {
     () => agents.find((a) => a.id === selectedAgentId) ?? null,
     [agents, selectedAgentId],
   );
-  const githubProvider = useMemo(
-    () => integrationProviders.find((p) => p.provider_id === 'github') ?? null,
-    [integrationProviders],
-  );
-  const githubConnected = githubProvider?.connected ?? false;
   const isAdmin = user?.role === 'admin';
 
   const sortedVisibleAgents = useMemo(
@@ -323,7 +321,7 @@ export default function App() {
     setAdminGateway(null);
     setAvailableModels([]);
     setIntegrationProviders([]);
-    setIntegrationToken('');
+    setFieldValues({});
     setModelsError('');
     setStatusError('');
   }
@@ -345,7 +343,7 @@ export default function App() {
       // Enable any toggled integrations on the new agent
       for (const providerId of createIntegrations) {
         try {
-          await setAgentGitHubIntegration(agent.id, true);
+          await setAgentIntegration(agent.id, providerId, true);
         } catch {
           // non-fatal — user can toggle later
         }
@@ -449,39 +447,41 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, page]);
 
-  async function handleConnectGitHub() {
-    if (!integrationToken.trim()) return;
+  async function handleConnectIntegration(providerId: string) {
     setIntegrationSaving(true);
     setStatusError('');
     try {
-      await connectGitHub(integrationToken.trim());
-      setIntegrationToken('');
+      await connectIntegration(providerId, fieldValues);
+      setFieldValues({});
       await loadIntegrations();
+      setIntegrationsView('list');
     } catch (err: unknown) {
-      setStatusError(err instanceof Error ? err.message : 'Failed to connect GitHub');
+      setStatusError(err instanceof Error ? err.message : 'Failed to connect integration');
     } finally {
       setIntegrationSaving(false);
     }
   }
 
-  async function handleDisconnectGitHub() {
+  async function handleDisconnectIntegration(providerId: string) {
     setIntegrationSaving(true);
     setStatusError('');
     try {
-      await disconnectGitHub();
+      await disconnectIntegration(providerId);
       await loadIntegrations();
+      setDetailProviderId('');
+      setIntegrationsView('list');
     } catch (err: unknown) {
-      setStatusError(err instanceof Error ? err.message : 'Failed to disconnect GitHub');
+      setStatusError(err instanceof Error ? err.message : 'Failed to disconnect integration');
     } finally {
       setIntegrationSaving(false);
     }
   }
 
-  async function handleToggleAgentIntegration(agentId: string, enabled: boolean) {
+  async function handleToggleAgentIntegration(agentId: string, providerId: string, enabled: boolean) {
     setIntegrationAction(agentId);
     setStatusError('');
     try {
-      await setAgentGitHubIntegration(agentId, enabled);
+      await setAgentIntegration(agentId, providerId, enabled);
       await loadIntegrations();
     } catch (err: unknown) {
       setStatusError(err instanceof Error ? err.message : 'Failed to update agent integration');
@@ -948,7 +948,7 @@ export default function App() {
                                       checked={binding?.enabled ?? false}
                                       disabled={!provider.connected || integrationAction === selectedAgent.id}
                                       onChange={(e) =>
-                                        handleToggleAgentIntegration(selectedAgent.id, e.target.checked)
+                                        handleToggleAgentIntegration(selectedAgent.id, provider.provider_id, e.target.checked)
                                       }
                                     />
                                     <span className="toggle-slider" />
@@ -1589,12 +1589,13 @@ export default function App() {
 
                 {integrationsLoading ? (
                   <div className="field-loading" style={{ padding: '20px 0' }}>Loading integrations…</div>
-                ) : integrationProviders.filter((p) => p.connected).length === 0 ? (
+                ) : integrationProviders.filter((p) => p.connected || p.auth_kind === 'unknown').length === 0 ? (
                   <div className="card card-detail">
                     <div className="integrations-empty-state">
                       <div className="integrations-empty-icon">
                         <svg width="32" height="32" viewBox="0 0 16 16" fill="currentColor" opacity="0.3">
-                          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                          <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8"/>
+                          <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4"/>
                         </svg>
                       </div>
                       <p>No integrations connected yet.</p>
@@ -1608,24 +1609,31 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="integration-cards-list">
-                    {integrationProviders.filter((p) => p.connected).map((provider) => (
+                    {integrationProviders.filter((p) => p.connected || p.auth_kind === 'unknown').map((provider) => (
                       <div
                         key={provider.provider_id}
                         className="integration-card"
                         onClick={() => { setDetailProviderId(provider.provider_id); setIntegrationsView('detail'); }}
                       >
-                        <div className="integration-card-icon integration-card-icon-github">
+                        <div className="integration-card-icon">
                           <svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                            <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8"/>
+                            <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4"/>
                           </svg>
                         </div>
                         <div className="integration-card-body">
                           <div className="integration-card-name">{provider.name}</div>
-                          {provider.connection ? (
-                            <div className="integration-card-sub">{provider.connection.external_login}</div>
+                          {provider.auth_kind === 'unknown' ? (
+                            <div className="integration-card-sub" style={{ color: 'var(--warning)' }}>Provider no longer registered</div>
+                          ) : provider.connection ? (
+                            <div className="integration-card-sub">{provider.connection.external_login || provider.connection.external_account_id}</div>
                           ) : null}
                         </div>
-                        <span className="badge badge-active">Connected</span>
+                        {provider.auth_kind === 'unknown' ? (
+                          <span className="badge badge-disabled">Orphaned</span>
+                        ) : (
+                          <span className="badge badge-active">Connected</span>
+                        )}
                         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
                           <path d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z"/>
                         </svg>
@@ -1637,91 +1645,128 @@ export default function App() {
             ) : null}
 
             {/* ── Add view ── */}
-            {integrationsView === 'add' ? (
-              <>
-                <div className="integrations-page-head">
-                  <button className="btn btn-ghost btn-sm" onClick={() => setIntegrationsView('list')}>
-                    ← Back
-                  </button>
-                  <h2>{addStep === 'picker' ? 'Choose a provider' : 'Connect GitHub'}</h2>
-                  <div />
-                </div>
+            {integrationsView === 'add' ? (() => {
+              const notConnectedProviders = integrationProviders.filter(
+                (p) => !p.connected && p.auth_kind !== 'unknown',
+              );
+              const pickedProvider = integrationProviders.find((p) => p.provider_id === pickedProviderId) ?? null;
+              const allFieldsFilled = pickedProvider
+                ? (pickedProvider.form_fields ?? []).every((f) => (fieldValues[f.name] ?? '').trim() !== '')
+                : false;
 
-                {addStep === 'picker' ? (
-                  <div className="provider-grid">
-                    <div className="provider-option" onClick={() => setAddStep('form')}>
-                      <div className="provider-option-icon provider-option-icon-github">
-                        <svg width="38" height="38" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
-                        </svg>
+              return (
+                <>
+                  <div className="integrations-page-head">
+                    <button className="btn btn-ghost btn-sm" onClick={() => setIntegrationsView('list')}>
+                      ← Back
+                    </button>
+                    <h2>{addStep === 'picker' ? 'Choose a provider' : `Connect ${pickedProvider?.name ?? ''}`}</h2>
+                    <div />
+                  </div>
+
+                  {addStep === 'picker' ? (
+                    notConnectedProviders.length === 0 ? (
+                      <div className="card card-detail">
+                        <div className="integrations-empty-state">
+                          <p>All available providers are already connected.</p>
+                        </div>
                       </div>
-                      <div className="provider-option-name">GitHub</div>
-                      <div className="provider-option-desc">Connect your GitHub account via a Personal Access Token</div>
+                    ) : (
+                      <div className="provider-grid">
+                        {notConnectedProviders.map((provider) => (
+                          <div
+                            key={provider.provider_id}
+                            className="provider-option"
+                            onClick={() => {
+                              setPickedProviderId(provider.provider_id);
+                              setFieldValues({});
+                              setAddStep('form');
+                            }}
+                          >
+                            <div className="provider-option-icon">
+                              <svg width="38" height="38" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8"/>
+                                <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4"/>
+                              </svg>
+                            </div>
+                            <div className="provider-option-name">{provider.name}</div>
+                            {provider.description ? (
+                              <div className="provider-option-desc">{provider.description}</div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  ) : pickedProvider ? (
+                    <div className="card card-form" style={{ maxWidth: 480 }}>
+                      {(pickedProvider.form_fields ?? []).map((field, idx) => (
+                        <div key={field.name} className="form-group">
+                          <label>
+                            {field.label}
+                            {field.help_url ? (
+                              <a
+                                href={field.help_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="field-help-link"
+                                title="Help"
+                              >
+                                {' ?'}
+                              </a>
+                            ) : null}
+                          </label>
+                          <input
+                            type={field.secret ? 'password' : 'text'}
+                            value={fieldValues[field.name] ?? ''}
+                            onChange={(e) =>
+                              setFieldValues((prev) => ({ ...prev, [field.name]: e.target.value }))
+                            }
+                            placeholder={field.placeholder ?? ''}
+                            autoFocus={idx === 0}
+                          />
+                        </div>
+                      ))}
+                      <div className="integration-actions">
+                        <button
+                          className="btn btn-primary"
+                          disabled={!allFieldsFilled || integrationSaving}
+                          onClick={() => handleConnectIntegration(pickedProvider.provider_id)}
+                        >
+                          {integrationSaving ? 'Connecting…' : `Connect ${pickedProvider.name}`}
+                        </button>
+                        <button className="btn btn-ghost" onClick={() => setAddStep('picker')}>
+                          Back
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="card card-form" style={{ maxWidth: 480 }}>
-                    <div className="form-group">
-                      <label>Personal Access Token (PAT)</label>
-                      <input
-                        type="password"
-                        value={integrationToken}
-                        onChange={(e) => setIntegrationToken(e.target.value)}
-                        placeholder="github_pat_…"
-                        autoFocus
-                      />
-                    </div>
-                    <div className="integration-hint">
-                      Use a fine-grained PAT with minimal permissions: Contents (read) and Pull requests (read/write).
-                    </div>
-                    <div className="integration-actions">
-                      <button
-                        className="btn btn-primary"
-                        disabled={!integrationToken.trim() || integrationSaving}
-                        onClick={async () => {
-                          if (!integrationToken.trim()) return;
-                          setIntegrationSaving(true);
-                          setStatusError('');
-                          try {
-                            await connectGitHub(integrationToken.trim());
-                            setIntegrationToken('');
-                            await loadIntegrations();
-                            setIntegrationsView('list');
-                          } catch (err: unknown) {
-                            setStatusError(err instanceof Error ? err.message : 'Failed to connect GitHub');
-                          } finally {
-                            setIntegrationSaving(false);
-                          }
-                        }}
-                      >
-                        {integrationSaving ? 'Connecting…' : 'Connect GitHub'}
-                      </button>
-                      <button className="btn btn-ghost" onClick={() => setAddStep('picker')}>
-                        Back
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </>
-            ) : null}
+                  ) : null}
+                </>
+              );
+            })() : null}
 
             {/* ── Detail view ── */}
             {integrationsView === 'detail' ? (() => {
               const provider = integrationProviders.find((p) => p.provider_id === detailProviderId);
               if (!provider) return null;
+              const isOrphan = provider.auth_kind === 'unknown';
+              const updateFieldsFilled = (provider.form_fields ?? []).every(
+                (f) => (fieldValues[f.name] ?? '').trim() !== '',
+              );
+
               return (
                 <>
                   <div className="integrations-page-head">
                     <button
                       className="btn btn-ghost btn-sm"
-                      onClick={() => { setDetailProviderId(''); setIntegrationsView('list'); }}
+                      onClick={() => { setDetailProviderId(''); setFieldValues({}); setIntegrationsView('list'); }}
                     >
                       ← Back
                     </button>
                     <div className="integration-detail-title">
-                      <div className="integration-detail-icon integration-detail-icon-github">
+                      <div className="integration-detail-icon">
                         <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                          <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8"/>
+                          <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4"/>
                         </svg>
                       </div>
                       <h2>{provider.name}</h2>
@@ -1729,19 +1774,30 @@ export default function App() {
                     <div />
                   </div>
 
-                  {/* Connection info */}
+                  {/* Orphan warning banner */}
+                  {isOrphan ? (
+                    <div className="banner banner-warning">
+                      <span>Provider is no longer registered. You can only disconnect this integration.</span>
+                    </div>
+                  ) : null}
+
+                  {/* Connection info + update/disconnect form */}
                   {provider.connection ? (
                     <div className="card card-detail">
                       <h3 style={{ fontWeight: 600, marginBottom: 12 }}>Connection</h3>
                       <div className="integration-details">
-                        <div className="integration-detail-item">
-                          <span className="integration-detail-label">GitHub Login</span>
-                          <span className="integration-detail-value">{provider.connection.external_login}</span>
-                        </div>
-                        <div className="integration-detail-item">
-                          <span className="integration-detail-label">Account Type</span>
-                          <span className="integration-detail-value">{provider.connection.account_type}</span>
-                        </div>
+                        {provider.connection.external_login ? (
+                          <div className="integration-detail-item">
+                            <span className="integration-detail-label">Account</span>
+                            <span className="integration-detail-value">{provider.connection.external_login}</span>
+                          </div>
+                        ) : null}
+                        {provider.connection.account_type ? (
+                          <div className="integration-detail-item">
+                            <span className="integration-detail-label">Type</span>
+                            <span className="integration-detail-value">{provider.connection.account_type}</span>
+                          </div>
+                        ) : null}
                         <div className="integration-detail-item">
                           <span className="integration-detail-label">Status</span>
                           <span className="integration-detail-value">{provider.connection.status}</span>
@@ -1751,91 +1807,122 @@ export default function App() {
                           <span className="integration-detail-value">{provider.connection.revision}</span>
                         </div>
                       </div>
-                      <div className="integration-token-section">
-                        <div className="form-group">
-                          <label>Update Personal Access Token</label>
-                          <input
-                            type="password"
-                            value={integrationToken}
-                            onChange={(e) => setIntegrationToken(e.target.value)}
-                            placeholder="New GitHub PAT…"
-                          />
+
+                      {/* MCP servers list */}
+                      {(provider.mcp_servers ?? []).length > 0 ? (
+                        <div className="integration-mcp-servers">
+                          <span className="integration-detail-label">MCP tools: </span>
+                          {(provider.mcp_servers ?? []).map((s, i) => (
+                            <span key={s.name}>
+                              <span className="tag">{s.name}</span>
+                              {i < (provider.mcp_servers ?? []).length - 1 ? ' ' : null}
+                            </span>
+                          ))}
                         </div>
-                        <div className="integration-hint">
-                          Use a fine-grained PAT with minimal permissions: Contents (read) and Pull requests (read/write).
+                      ) : null}
+
+                      {/* Update credentials form — only shown for registered providers */}
+                      {!isOrphan && (provider.form_fields ?? []).length > 0 ? (
+                        <div className="integration-token-section">
+                          <h4 style={{ fontWeight: 600, marginBottom: 8 }}>Update credentials</h4>
+                          {(provider.form_fields ?? []).map((field) => (
+                            <div key={field.name} className="form-group">
+                              <label>
+                                {field.label}
+                                {field.help_url ? (
+                                  <a
+                                    href={field.help_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="field-help-link"
+                                    title="Help"
+                                  >
+                                    {' ?'}
+                                  </a>
+                                ) : null}
+                              </label>
+                              <input
+                                type={field.secret ? 'password' : 'text'}
+                                value={fieldValues[field.name] ?? ''}
+                                onChange={(e) =>
+                                  setFieldValues((prev) => ({ ...prev, [field.name]: e.target.value }))
+                                }
+                                placeholder={field.placeholder ?? ''}
+                              />
+                            </div>
+                          ))}
+                          <div className="integration-actions">
+                            <button
+                              className="btn btn-primary"
+                              onClick={() => handleConnectIntegration(provider.provider_id)}
+                              disabled={!updateFieldsFilled || integrationSaving}
+                            >
+                              {integrationSaving ? 'Updating…' : 'Update credentials'}
+                            </button>
+                            <button
+                              className="btn btn-danger"
+                              onClick={() => handleDisconnectIntegration(provider.provider_id)}
+                              disabled={integrationSaving}
+                            >
+                              {integrationSaving ? 'Disconnecting…' : 'Disconnect'}
+                            </button>
+                          </div>
                         </div>
-                        <div className="integration-actions">
-                          <button
-                            className="btn btn-primary"
-                            onClick={handleConnectGitHub}
-                            disabled={!integrationToken.trim() || integrationSaving}
-                          >
-                            {integrationSaving ? 'Updating…' : 'Update token'}
-                          </button>
+                      ) : (
+                        <div className="integration-actions" style={{ marginTop: 16 }}>
                           <button
                             className="btn btn-danger"
-                            onClick={async () => {
-                              setIntegrationSaving(true);
-                              setStatusError('');
-                              try {
-                                await disconnectGitHub();
-                                await loadIntegrations();
-                                setDetailProviderId('');
-                                setIntegrationsView('list');
-                              } catch (err: unknown) {
-                                setStatusError(err instanceof Error ? err.message : 'Failed to disconnect GitHub');
-                              } finally {
-                                setIntegrationSaving(false);
-                              }
-                            }}
+                            onClick={() => handleDisconnectIntegration(provider.provider_id)}
                             disabled={integrationSaving}
                           >
                             {integrationSaving ? 'Disconnecting…' : 'Disconnect'}
                           </button>
                         </div>
-                      </div>
+                      )}
                     </div>
                   ) : null}
 
-                  {/* Agents */}
-                  <div className="card card-detail">
-                    <h3 style={{ fontWeight: 600, marginBottom: 4 }}>Agents</h3>
-                    <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', marginBottom: 12 }}>
-                      Enable this integration per agent. Restart the agent after toggling for changes to take effect.
-                    </p>
-                    {agents.length === 0 ? (
-                      <div className="empty-state" style={{ padding: '8px 0 0' }}>No agents found.</div>
-                    ) : (
-                      <div className="integration-agents-list">
-                        {agents.map((agent) => {
-                          const binding = provider.agent_bindings.find((b) => b.agent_id === agent.id);
-                          return (
-                            <div key={agent.id} className="integration-agent-row">
-                              <div className="integration-agent-info">
-                                <div className="integration-agent-name">{agent.name}</div>
-                                <div className="integration-agent-meta">
-                                  <span className="tag">{agent.runtime}</span>
-                                  <span className={`state-dot ${agent.state}`} title={agent.state} />
-                                  {agent.state === 'running' && binding?.enabled ? (
-                                    <span style={{ fontSize: '0.72rem', color: 'var(--warning)' }}>restart to apply changes</span>
-                                  ) : null}
+                  {/* Agents — hidden for orphan providers since enabling would fail at runtime */}
+                  {!isOrphan ? (
+                    <div className="card card-detail">
+                      <h3 style={{ fontWeight: 600, marginBottom: 4 }}>Agents</h3>
+                      <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', marginBottom: 12 }}>
+                        Enable this integration per agent. Restart the agent after toggling for changes to take effect.
+                      </p>
+                      {agents.length === 0 ? (
+                        <div className="empty-state" style={{ padding: '8px 0 0' }}>No agents found.</div>
+                      ) : (
+                        <div className="integration-agents-list">
+                          {agents.map((agent) => {
+                            const binding = provider.agent_bindings.find((b) => b.agent_id === agent.id);
+                            return (
+                              <div key={agent.id} className="integration-agent-row">
+                                <div className="integration-agent-info">
+                                  <div className="integration-agent-name">{agent.name}</div>
+                                  <div className="integration-agent-meta">
+                                    <span className="tag">{agent.runtime}</span>
+                                    <span className={`state-dot ${agent.state}`} title={agent.state} />
+                                    {agent.state === 'running' && binding?.enabled ? (
+                                      <span style={{ fontSize: '0.72rem', color: 'var(--warning)' }}>restart to apply changes</span>
+                                    ) : null}
+                                  </div>
                                 </div>
+                                <label className="toggle">
+                                  <input
+                                    type="checkbox"
+                                    checked={binding?.enabled ?? false}
+                                    disabled={!provider.connected || integrationAction === agent.id}
+                                    onChange={(e) => handleToggleAgentIntegration(agent.id, provider.provider_id, e.target.checked)}
+                                  />
+                                  <span className="toggle-slider" />
+                                </label>
                               </div>
-                              <label className="toggle">
-                                <input
-                                  type="checkbox"
-                                  checked={binding?.enabled ?? false}
-                                  disabled={!provider.connected || integrationAction === agent.id}
-                                  onChange={(e) => handleToggleAgentIntegration(agent.id, e.target.checked)}
-                                />
-                                <span className="toggle-slider" />
-                              </label>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
                 </>
               );
             })() : null}
