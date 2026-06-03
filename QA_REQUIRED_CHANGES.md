@@ -205,3 +205,327 @@ Status markers are intentionally conservative: an item is checked only after the
 ### Pass criteria
 
 All unchecked checkboxes above are checked (marked `[x]`) only after each scenario is verified **not to reproduce** or confirmed **to pass** on the target QA environment. Critical/High severity items (unauthenticated access, PAT exposure, authorization bypass, secret leak in API) must pass with zero regressions before marking this section complete.
+
+## 14. Plugin system for integrations and MCP servers — E2E validation scenarios
+
+- [ ] Verified fixed on target environment
+- Severity: High
+- Goal: validate the hot-reloading plugin system that replaced the hardcoded GitHub provider. Coverage: manifest loading from File/DB/CRD sources with precedence and hot reload; `http_template` and `sidecar` plugin kinds; env injection at agent start; MCP server contributions (external in manifest, self-hosted via `MCPServer` CRD + in-process operator); generic UI cards driven by manifest `form_fields`; scope-aware credentials in `integration_connections`; the admin `/api/admin/plugins` CRUD; and graceful behavior on orphaned credentials, malformed manifests, sidecar timeouts, and missing MCPServer references.
+- Deployment status: shipped in commits `3d79981` (plugin system MVP) and `2bd8826` (legacy GitHub provider removal). Backend loads integrations from three registry sources merged with CRD > DB > File precedence. Helm chart ships `charts/shclop/templates/plugins-configmap.yaml` mounted at `/etc/shclop/plugins.d/`, the `IntegrationPlugin` and `MCPServer` CRDs in `charts/shclop/crds/`, and extended RBAC. Migrations `0004_plugin_manifests.sql` and `0005_integration_scope.sql` are applied. Existing `integration_connections` rows for `provider_id='github'` continue to resolve unchanged (`scope='user'`, `scope_id=user_id` backfilled).
+- Required action: run the scenarios below on the target environment after the next deploy. Critical/High items must pass with zero regressions before this section is closed.
+
+### Scenarios
+
+**14.1 File registry — initial scan and hot reload:**
+- [ ] Helm install renders ConfigMap `shclop-plugins-seed` with `github.yaml` mounted at `/etc/shclop/plugins.d/github.yaml` inside the backend pod (verify with `kubectl exec ... -- ls /etc/shclop/plugins.d/`).
+- [ ] `GET /api/integrations` returns a `github` provider with `auth_kind=pat_token`, `form_fields`, and `description` matching the manifest contents.
+- [ ] `kubectl exec` into the backend pod and write a second manifest `gitlab.yaml` to `/etc/shclop/plugins.d/` — within ≤2s the new provider appears in `GET /api/integrations` with no backend restart.
+- [ ] Overwrite `gitlab.yaml` with malformed YAML — backend logs a WARN, prior valid manifest is retained, provider is **not** dropped.
+- [ ] Remove `gitlab.yaml` — provider disappears from `/api/integrations` within ≤2s.
+
+**14.2 DB registry — admin CRUD via `/api/admin/plugins`:**
+- [ ] Admin `POST /api/admin/plugins` with a new plugin manifest YAML returns 200 with the upserted row and revision = 1.
+- [ ] Within ≤12s (10s poll + grace), `GET /api/integrations` reflects the new provider.
+- [ ] Admin `PUT /api/admin/plugins/{id}` with modified YAML bumps `revision` and within ≤12s the new content reflects in the list.
+- [ ] Admin `DELETE /api/admin/plugins/{id}` removes it within ≤12s.
+- [ ] Regular user Bob receives 403 on every method of `/api/admin/plugins`.
+- [ ] Malformed YAML in POST/PUT body returns 400 with parse error before any DB write.
+- [ ] Manifest whose `metadata.name` or `spec.id` mismatches the URL path id returns 400.
+
+**14.3 CRD registry — Kubernetes `IntegrationPlugin`:**
+- [ ] `kubectl apply -f` an `IntegrationPlugin` cluster-scoped CR — within ~3s the provider appears in `GET /api/integrations`.
+- [ ] `kubectl edit integrationplugin <name>` updates the spec — change reflects within ~3s.
+- [ ] `kubectl delete integrationplugin <name>` removes the provider.
+- [ ] Apply a CR with invalid `spec.kind: "bogus"` — backend logs WARN, provider does not appear (server-side `Manifest.Validate` rejects).
+
+**14.4 Source precedence (CRD > DB > File):**
+- [ ] Define the same plugin id (e.g. `github`) across all three sources with distinct `display_name` values.
+- [ ] `GET /api/integrations` returns the CRD version. Backend logs `plugin shadowed` WARN naming both shadowed sources.
+- [ ] `kubectl delete integrationplugin github` → `GET /api/integrations` falls back to the DB version.
+- [ ] Admin `DELETE /api/admin/plugins/github` → falls back to the File version.
+
+**14.5 `http_template` kind — validate + env injection:**
+- [ ] Connect GitHub with a valid PAT — backend performs `GET https://api.github.com/user` with `Authorization: Bearer <token>`, parses `id`/`login`/`type`, stores connection with extracted metadata.
+- [ ] Connect with invalid PAT — backend returns 400 mentioning HTTP status `401`; no row written to `integration_connections`.
+- [ ] Start an agent with GitHub enabled — runtime pod env contains `GITHUB_TOKEN` matching the stored PAT (verify via `env | grep -q ^GITHUB_TOKEN=` from inside the runtime; **do not print the value**).
+- [ ] Manifest with a templated header (e.g. `Authorization: Bearer {{.Token}}`) renders correctly at connect time.
+
+**14.6 `sidecar` kind — backend-to-plugin HTTP:**
+- [ ] Deploy a stub sidecar Deployment+Service in the cluster that returns the documented JSON contract for `POST /validate` and `POST /runtime-env`. Define an `IntegrationPlugin` of `kind: sidecar` pointing at the service URL.
+- [ ] Connect with a token — backend POSTs `{fields, context}` to `/validate`, sidecar returns `{external_account_id, external_login, account_type, status: "connected"}`; connection stored.
+- [ ] Sidecar returns `status: "error"` — backend returns 400, connection not stored.
+- [ ] Sidecar URL points to a closed port — connect returns 400 with `"unreachable"` in the message.
+- [ ] Sidecar `/validate` exceeds the manifest `timeout` — connect returns 400 with deadline-exceeded.
+- [ ] Start agent — backend POSTs `/runtime-env`, merges returned env into the pod spec; `Contributions.Env` declared in the manifest is **ignored** for sidecar kind (sidecar is the source of truth).
+
+**14.7 MCP — external server in plugin manifest:**
+- [ ] Define a plugin with `contributions.mcp_servers: [{name: x, external: {url: "https://...", auth_header: "Bearer {{.Token}}"}}]`.
+- [ ] Connect token, enable on an agent, start agent — runtime env contains `SHCLOP_MCP_CONFIG` JSON with one entry matching `name=x`, URL rendered, and `Authorization` header rendered with the token.
+- [ ] No `MCPServer` CR is created; nothing extra runs in the cluster.
+- [ ] Token value never appears in plain text in any backend log line that includes the env blob.
+
+**14.8 MCP — self-hosted via `MCPServer` CRD + in-process operator:**
+- [ ] `kubectl apply -f` a namespaced `MCPServer` CR — within ~5s the controller creates a Deployment, Service, and NetworkPolicy labeled `shclop.io/managed-by=mcpserver-controller`. Status `serviceURL` populated.
+- [ ] Apply a plugin manifest with `mcp_servers: [{name: x, ref: <MCPServer name>}]`. Connect token. Enable on agent.
+- [ ] Start agent — `SHCLOP_MCP_CONFIG` contains the cluster service URL `http://mcp-<name>.<ns>.svc.cluster.local:<port>`.
+- [ ] `kubectl delete mcpserver <name>` — within ~5s the Deployment, Service, and NetworkPolicy are removed.
+- [ ] Plugin references a non-existent `MCPServer` ref — agent start fails with error containing `"mcpserver_not_found"`; agent state set to `idle`; activity log records the failure.
+- [ ] Re-applying the same `MCPServer` is idempotent (no errors, no duplicate resources).
+- [ ] NetworkPolicy created by the controller restricts ingress to pods labeled `shclop.io/role=agent-runtime`.
+
+**14.9 Generic UI — `form_fields` rendering:**
+- [ ] Integrations page renders one card per provider returned by `/api/integrations`.
+- [ ] Each card renders form inputs from `form_fields[]`: `secret: true` → `<input type="password">`; `placeholder` and `help_url` honored.
+- [ ] Submitting the form calls `PUT /api/integrations/{id}/connection` with body shape `{"fields": {...}}`.
+- [ ] Provider with `mcp_servers[]` non-empty shows them as a small list ("MCP tools: …") in the connected-state card.
+- [ ] Provider with multiple `form_fields` (more than just `token`) renders all of them and submits them all.
+
+**14.10 Generic UI — orphan provider cards:**
+- [ ] After admin `DELETE` of a plugin whose connection Bob still holds, the Integrations page renders a banner "Provider is no longer registered." for that provider.
+- [ ] The orphan card exposes only the Disconnect button (no connect form, no agent-binding toggle).
+- [ ] Disconnect removes the connection from `integration_connections`; the orphan card disappears on next refresh.
+- [ ] Attempting to start an agent with an orphaned enabled integration returns 400 with `"plugin unregistered: <id>"`.
+
+**14.11 Connect API shape — generic + legacy fallback:**
+- [ ] `PUT /api/integrations/{id}/connection` with body `{"fields": {"token": "..."}}` succeeds for `http_template` plugins.
+- [ ] Legacy body `{"token": "..."}` still succeeds (backward compatibility for older UIs/clients) — internally mapped to `fields.token`.
+- [ ] Empty `fields` map for a plugin requiring `token` returns 400.
+- [ ] Unknown provider id returns 400 with `"not registered"`.
+
+**14.12 Scope-aware credentials migration:**
+- [ ] After migration `0005_integration_scope.sql`, every row in `integration_connections` has `scope='user'` and `scope_id=user_id`. Primary key is `(provider_id, scope, scope_id)`.
+- [ ] Bob's pre-migration GitHub connection still resolves via `GET /api/integrations` with `connected: true`.
+- [ ] Bob can still start an agent with GitHub enabled, and `GITHUB_TOKEN` is injected with the original encrypted value (decrypted at runtime).
+- [ ] No backfill or manual intervention required after deploy. Migration is idempotent on re-run.
+
+**14.13 Legacy GitHub provider removal:**
+- [ ] After commit `2bd8826`, the deployed image no longer contains `internal/integrations/github.go`. GitHub flow works exclusively through the `github.yaml` manifest from the seed ConfigMap.
+- [ ] Existing GitHub connections continue to work without re-connection.
+- [ ] Removing the `github.yaml` entry from the ConfigMap (rerendered Helm install with seed disabled) immediately drops the GitHub provider from `/api/integrations` — confirms no hardcoded fallback remains.
+
+**14.14 Failure modes — no crash, clear errors, no secret leaks:**
+- [ ] Plugin manifest references a deleted `MCPServer` — agent start returns 400 with `"mcpserver_not_found"`; agent state set to `idle`; activity log records the cause without leaking token.
+- [ ] User connection exists for a plugin deleted from all sources — appears as orphan in UI; agent start with that integration enabled returns 400 with `"plugin unregistered: <id>"`.
+- [ ] Sidecar plugin times out at runtime env build — agent start fails with a deadline error; agent state `idle`; no half-started pod.
+- [ ] Backend loses connection to kube-apiserver — informers reconnect with backoff; File and DB registries continue serving cached state; CRD source resyncs after reconnect.
+- [ ] Encrypted secret never appears in any log line, API response, or activity event.
+
+**14.15 Helm chart rendering:**
+- [ ] `helm template charts/shclop` renders the seed ConfigMap with literal `{{.Token}}` in `github.yaml` data (Helm-templating escape preserved — Go template syntax not expanded by Helm).
+- [ ] Both CRDs render under `charts/shclop/crds/` and Helm auto-applies them on install.
+- [ ] Deployment spec mounts the ConfigMap at `/etc/shclop/plugins.d/` and sets `SHCLOP_PLUGIN_DIR` env to the same path.
+- [ ] RBAC includes a ClusterRole rule for `integrationplugins.shclop.io` (`get,list,watch`) and a namespaced Role for `mcpservers.shclop.io` plus `deployments.apps`, `services`, `networkpolicies.networking.k8s.io` (CRUD verbs).
+- [ ] `helm lint charts/shclop` passes with zero failures.
+
+**14.16 Hot reload latency:**
+- [ ] File reload from `kubectl exec` write to UI visibility ≤2s.
+- [ ] DB reload from admin POST to UI visibility ≤12s (10s poll + grace).
+- [ ] CRD reload from `kubectl apply` to UI visibility ≤3s (informer dispatch).
+- [ ] Backend logs include a `source=file|db|crd` tag on every plugin lifecycle event.
+- [ ] Conflict shadowing is logged once per change (deduped), not on every poll/reconcile.
+
+**14.17 Audit/activity events:**
+- [ ] `integration.connected` and `integration.disconnected` events recorded for the generic connect/disconnect API paths (mirrors §13.12, now applies to all plugin ids, not only `github`).
+- [ ] `integration.agent_enabled` and `integration.agent_disabled` events recorded per provider id.
+- [ ] When agent start fails due to a missing or malformed plugin, the activity log records the cause with provider id; no token leaks into the event.
+
+**14.18 Authorization on plugin operations:**
+- [ ] Bob cannot create, update, or delete entries in `/api/admin/plugins` (403 on every method).
+- [ ] Bob cannot view or modify another user's `integration_connections` rows via any API.
+- [ ] Bob cannot enable an integration on an agent he does not own.
+- [ ] Admin's `/api/integrations` response does not expose other users' encrypted secrets in any field.
+
+### Test data
+
+- **File-source manifest**: shipped `github.yaml` from `charts/shclop/templates/plugins-configmap.yaml`.
+- **DB-source manifest**: copy `github.yaml`, change `metadata.name` and `spec.id` to `gitlab`, point `validate.http.url` at `https://gitlab.com/api/v4/user`. POST via `/api/admin/plugins`.
+- **CRD-source manifest**: same content as DB-source but wrapped in the `IntegrationPlugin` CR envelope and applied via `kubectl apply -f`.
+- **Sidecar test service**: any HTTP server returning the documented `POST /validate` and `POST /runtime-env` JSON contract on a known cluster service URL. A minimal Python or Go stub is sufficient.
+- **`MCPServer` CR**: a small CR pointing at any HTTP MCP container image (real or stub) for the operator-creation flow.
+- **Users**: same `admin` and `bob` from §13. Add a third user `carol` to validate cross-user authorization on plugin operations.
+- **Test PAT**: revocable fine-grained GitHub PAT with `contents:read` access to `tixqz/test-hehehe`.
+
+> Do **not** commit real PATs, sidecar API keys, or any test credentials into this file or any repository file. Use environment variables or a secure vault during test execution.
+
+### Pass criteria
+
+All checkboxes in §14 are marked `[x]` only after each scenario is verified on the target QA environment. Critical/High items that must pass before this section is closed:
+- **14.1** (file source baseline — plugin loading + hot reload),
+- **14.5** (PAT validate + env injection — replaces the legacy GitHub path),
+- **14.8** (MCP operator lifecycle — Deployment+Service+NetworkPolicy reconcile and cleanup),
+- **14.12** (scope-aware migration must not lose existing credentials),
+- **14.13** (legacy GitHub removal parity — existing connections continue to work),
+- **14.14** (failure modes do not leak secrets, do not crash backend, surface clear errors),
+- **14.18** (authorization boundaries hold across admin/regular-user plugin operations).
+
+## 15. OIDC SSO — E2E validation scenarios
+
+Feature delivered in commit `4aab819` ("feat: OIDC SSO with admin-toggleable auth modes"). Adds OpenID Connect single sign-on alongside the existing local password login. Providers are configured via Helm env vars at deploy time; admin can switch the global mode (`local` / `sso` / `both`) and per-provider `enabled` flags at runtime via `/api/admin/auth-settings`. First successful SSO sign-in JIT-creates a local user with `role=user`.
+
+All scenarios below should be exercised end-to-end on the QA cluster against at least one real external IdP (Keycloak or Dex preferred for self-hosted; Auth0 dev tenant acceptable). Cookies must be inspected in the browser dev-tools network panel where indicated.
+
+### 15.1 Local-only mode is the default after fresh install (Critical)
+
+- [ ] Fresh `helm install` with `auth.idp.providers: []`. Open the login page.
+- [ ] Verify `GET /api/auth/providers` returns `{"mode":"local","providers":[]}`.
+- [ ] Verify the UI shows the username/password form and no `Sign in with X` buttons.
+- [ ] Local login as bootstrap admin succeeds and lands on the agents page.
+
+### 15.2 IdP provider is materialized from Helm env vars at startup (Critical)
+
+- [ ] `helm upgrade` with one configured provider (`name=keycloak`, valid `issuer`, `clientID`, `clientSecret` Secret, `redirectURI`). `helm upgrade` includes `auth.cookieKey.existingSecret`.
+- [ ] Pod restarts. Inspect pod logs for `idp registry materialized` (or equivalent) without errors.
+- [ ] `GET /api/auth/providers` returns the provider with `status: "ready"`.
+- [ ] The login page renders the `Sign in with Keycloak` anchor.
+
+### 15.3 Degraded provider — unreachable issuer (High)
+
+- [ ] Configure a provider with an issuer URL pointing at a 404/timeout host. `helm upgrade`.
+- [ ] `GET /api/auth/providers` returns `status: "degraded"` with a non-empty `error` field.
+- [ ] Login UI renders the button as disabled with the error in a tooltip; the local form (if visible per mode) still works.
+- [ ] Restore the issuer. Within ~60 seconds the background retry transitions the provider to `ready` without pod restart. Verify `/api/auth/providers` reflects the new state.
+
+### 15.4 OIDC authorize-redirect flow sets a one-shot state cookie (Critical)
+
+- [ ] Click `Sign in with Keycloak`. Browser is redirected to the IdP `authorize_endpoint`.
+- [ ] In dev-tools, verify the request to `/api/auth/oidc/keycloak/login` set a cookie `shclop_oidc_state` with `HttpOnly`, `Secure` (when not in dev), `SameSite=Lax`, `Path=/api/auth/oidc/`, `Max-Age=600`.
+- [ ] The 302 `Location` header contains `state=...`, `code_challenge=...`, `code_challenge_method=S256`, and a `nonce` parameter.
+
+### 15.5 Happy-path callback JIT-creates a local user (Critical)
+
+- [ ] On a clean shclop instance, complete the IdP login as a user whose email is not in shclop yet.
+- [ ] The callback round trip ends with a 302 to `/` and a `shclop_session` cookie.
+- [ ] `GET /api/me` returns the new user (username = IdP email, role = `user`, not disabled).
+- [ ] In the admin Users tab, the user appears with one linked identity entry (provider name, subject, email, display name, `last_login_at` set).
+- [ ] The `shclop_oidc_state` cookie is gone (one-shot — handler deletes it on callback).
+
+### 15.6 Repeat login of an existing SSO user does not create a duplicate (High)
+
+- [ ] Same user signs out, signs back in via the SSO button.
+- [ ] No new row in users; the existing identity's `last_login_at` is updated.
+- [ ] `ListUsers` count unchanged in admin overview.
+
+### 15.7 Email collision with existing local user is rejected (Critical)
+
+- [ ] Admin creates a local user `alice@example.com` (with any password) via the admin UI.
+- [ ] An IdP account with `email=alice@example.com` attempts SSO. Backend returns HTTP 409 with body containing `local_user_with_same_email_exists`.
+- [ ] No new user is created. No new identity is linked. The user sees an error message.
+- [ ] Admin manually links the identity via the Auth admin tab (or via `POST /api/admin/users/{id}/identities` directly). The same SSO attempt then succeeds, and `GET /api/me` returns the pre-existing local user.
+
+### 15.8 `auth.mode=local` blocks the SSO endpoints (High)
+
+- [ ] Admin sets mode to `local` via `PATCH /api/admin/auth-settings`.
+- [ ] `GET /api/auth/oidc/keycloak/login` returns 404 `sso_disabled` (or 404 with the appropriate body — exact code per server.go).
+- [ ] The login screen hides all SSO buttons.
+
+### 15.9 `auth.mode=sso` blocks local login for non-bootstrap users (Critical)
+
+- [ ] Admin sets mode to `sso`.
+- [ ] Attempt `POST /api/auth/login` with credentials for any non-bootstrap user → 403 with body `local_login_disabled`.
+- [ ] Same call with `username == SHCLOP_BOOTSTRAP_ADMIN_USERNAME` → 200 (break-glass).
+- [ ] The login screen hides the local form by default. Visiting `/?break_glass=1` shows the local form again (for bootstrap admin recovery scenarios).
+
+### 15.10 `auth.mode=both` keeps both paths active (High)
+
+- [ ] Admin sets mode to `both`.
+- [ ] Local user signs in via the username/password form — success.
+- [ ] Different user signs in via `Sign in with X` — success.
+- [ ] Both sessions issue the same kind of session token; both can access `/api/me`, agents, etc.
+
+### 15.11 Per-provider enable flag (Medium)
+
+- [ ] Admin disables a specific provider via the Auth admin tab.
+- [ ] `GET /api/auth/providers` returns that provider with `enabled: false` (status may still be `ready`).
+- [ ] The login screen does not render a `Sign in with X` button for the disabled provider.
+- [ ] `GET /api/auth/oidc/<disabled-name>/login` returns 404 `idp_not_available`.
+- [ ] Re-enable. The button reappears and login resumes.
+
+### 15.12 State-tampering attack surface (Critical)
+
+- [ ] Initiate `/oidc/login`, capture the IdP redirect URL.
+- [ ] Manually call `/oidc/callback?code=anything&state=<wrong-value>` while the original `shclop_oidc_state` cookie is still set → 400 `state_mismatch`. No user created.
+- [ ] Repeat without the cookie at all → 400 `state_cookie_missing`.
+- [ ] Repeat with the cookie but the `state` query param value differs by one character → 400 `state_mismatch`.
+
+### 15.13 Nonce-mismatch is rejected (High)
+
+- [ ] Mint an ID token whose `nonce` claim differs from the cookie's nonce (or sign one with a manipulated nonce via an interceptor) → callback returns 401 `nonce_mismatch`. No user created.
+
+### 15.14 Expired ID token is rejected (High)
+
+- [ ] Have the IdP issue an ID token with `exp` already in the past (some IdPs allow this for tests; otherwise wait it out) → 401 `id_token_invalid`. No user created.
+
+### 15.15 JWKS rotation is transparent (Medium)
+
+- [ ] Force a key rotation on the IdP between two consecutive SSO logins (e.g., Keycloak realm key rotation).
+- [ ] Second login still succeeds — `*oidc.Provider` fetches the updated JWKS on the next signature verification without any shclop restart.
+
+### 15.16 Logout invalidates the session (Critical)
+
+- [ ] Successful local OR SSO login. Capture the `shclop_session` cookie / Bearer token.
+- [ ] `POST /api/auth/logout` returns 204; the `shclop_session` cookie is cleared.
+- [ ] Any subsequent API call with the same token returns 401.
+- [ ] Browser UI returns to the login screen and the localStorage token is gone.
+
+### 15.17 Disabled user cannot complete SSO login (High)
+
+- [ ] Admin disables an existing user (linked to an SSO identity).
+- [ ] That user attempts SSO again → callback returns 403 `user_disabled`. No session issued.
+- [ ] Re-enable. SSO works again.
+
+### 15.18 Identity link / unlink workflow (High)
+
+- [ ] Admin opens the Users tab, expands a user, sees the identities table.
+- [ ] Click `Link new identity` (or POST `/api/admin/users/{id}/identities`) with `provider_name`, `subject`, `email`, `display_name` from the IdP. Returns 201.
+- [ ] The user (or an admin acting on their behalf) signs in via SSO with that subject — returns the linked existing user, not a new JIT-create.
+- [ ] Admin unlinks the identity. SSO attempt for the same subject now JIT-creates a fresh user (assuming no email collision).
+
+### 15.19 Cookie key rotation (Medium)
+
+- [ ] Rotate the secret backing `SHCLOP_AUTH_COOKIE_KEY` (regenerate, update the Secret, `kubectl rollout restart`).
+- [ ] Any in-flight `/login` -> `/callback` that crosses the restart fails with 400 (`state_invalid`) because the old-key cookie cannot be decrypted. User restarts the flow and succeeds.
+- [ ] Completed sessions in `shclop_session` are unaffected (different cookie, different lifecycle).
+
+### 15.20 Multi-replica behavior — known constraint (Medium)
+
+- [ ] Scale `replicas: 2`. Login via either path on pod A; the issued `shclop_session` token is in-memory on pod A only.
+- [ ] If a follow-up request is routed to pod B (no sticky sessions), it returns 401. **This is the documented current state, not a regression.** Verify the documented workaround (sticky sessions on the Ingress or `replicas: 1` for SSO-active deployments) is mentioned in ADMIN_GUIDE.
+
+### 15.21 Helm rendering safety (Medium)
+
+- [ ] `helm template` with `auth.idp.providers: [...]` non-empty AND `auth.cookieKey.existingSecret.name: ""` → templating **fails** with a clear error (server-side guard in deployment.yaml).
+- [ ] `helm template` with `auth.idp.providers: []` → no `SHCLOP_IDP_PROVIDER_*` env vars rendered, no `SHCLOP_AUTH_COOKIE_KEY` env var.
+- [ ] `helm template` with one provider → all required env vars rendered, `CLIENT_SECRET` uses `valueFrom.secretKeyRef`, never inline plaintext.
+
+### 15.22 Audit trail (Medium)
+
+- [ ] Each successful SSO login emits an `auth.login.oidc` activity entry with provider name in the metadata. Visible in the admin Activity tab.
+- [ ] Failed callbacks (state mismatch, nonce mismatch, id_token_invalid) do not silently no-op — there is enough information in stdout JSON logs to diagnose. No raw tokens or secrets are logged.
+
+### 15.23 Authorization boundaries on admin endpoints (Critical)
+
+- [ ] As a regular `user` (Bob from §13), call `GET /api/admin/auth-settings` → 403.
+- [ ] Same with `PATCH /api/admin/auth-settings`, `POST /api/admin/users/.../identities`, `DELETE /.../identities/.../...` → 403 each.
+- [ ] As admin → 200 / 201 / 204 as appropriate.
+
+### Test data
+
+- **IdP**: at least one real provider, ideally two (Keycloak + Auth0, or Keycloak + Dex). Use a non-production realm/tenant.
+- **OAuth client**: registered with redirect URI `https://<qa-host>/api/auth/oidc/<name>/callback`. Confidential client, client secret stored in a Kubernetes Secret referenced by `auth.idp.providers[*].clientSecret.existingSecret`.
+- **Cookie key**: `openssl rand -base64 32` placed in a Kubernetes Secret, referenced by `auth.cookieKey.existingSecret`.
+- **Users**: bootstrap admin (`admin`), an existing local user with a known email (`alice@example.com`) for the collision case, a regular user `bob`, and IdP-side accounts whose emails are NOT yet in shclop for the happy-path JIT cases.
+
+> Do **not** commit real OAuth client secrets, cookie keys, or IdP test credentials into this file or any repository file. Use environment variables or a secure vault.
+
+### Pass criteria
+
+All checkboxes in §15 are marked `[x]` only after each scenario is verified on the target QA environment. Critical/High items that must pass before this section is closed:
+- **15.1** (default local mode unchanged),
+- **15.2** (Helm provider materialization),
+- **15.4** (state cookie shape — security-critical),
+- **15.5** (happy-path JIT-create),
+- **15.7** (email collision rejected — security-critical),
+- **15.9** (sso mode + break-glass admin work as specified),
+- **15.12** (state-tampering protection — security-critical),
+- **15.16** (logout actually invalidates session — security-critical),
+- **15.23** (authorization boundaries — security-critical).
