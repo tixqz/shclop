@@ -201,7 +201,53 @@ async function apiFetch<T>(
   return (await res.json()) as T;
 }
 
+// ── Auth types ──
+
+export type AuthMode = 'local' | 'sso' | 'both';
+
+export type AuthProvider = {
+  name: string;
+  display_name: string;
+  status: 'ready' | 'degraded';
+  error?: string;
+  enabled: boolean;
+};
+
+export type AuthProvidersResponse = {
+  mode: AuthMode;
+  providers: AuthProvider[];
+};
+
+export type AdminAuthSettings = AuthProvidersResponse;
+
+export type AdminAuthSettingsPatch = {
+  mode?: AuthMode;
+  providers?: Array<{ name: string; enabled: boolean }>;
+};
+
+export type UserIdentity = {
+  provider_name: string;
+  subject: string;
+  user_id: string;
+  email: string;
+  display_name: string;
+  linked_at: string;
+  last_login_at?: string;
+};
+
 // ── Auth ──
+
+export async function getAuthProviders(): Promise<AuthProvidersResponse> {
+  return apiFetch<AuthProvidersResponse>('/api/auth/providers');
+}
+
+export async function logout(): Promise<void> {
+  try {
+    await apiFetch<void>('/api/auth/logout', { method: 'POST' });
+  } finally {
+    clearToken();
+  }
+}
 
 export async function login(
   username: string,
@@ -365,6 +411,54 @@ export async function adminPatchGateway(
     method: 'PATCH',
     body: JSON.stringify(body),
   });
+}
+
+// ── Admin: Auth settings ──
+
+export async function adminGetAuthSettings(): Promise<AdminAuthSettings> {
+  return apiFetch<AdminAuthSettings>('/api/admin/auth-settings');
+}
+
+export async function adminPatchAuthSettings(
+  patch: AdminAuthSettingsPatch,
+): Promise<AdminAuthSettings> {
+  return apiFetch<AdminAuthSettings>('/api/admin/auth-settings', {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function adminListUserIdentities(userId: string): Promise<UserIdentity[]> {
+  return apiFetch<UserIdentity[]>(`/api/admin/users/${encodeURIComponent(userId)}/identities`);
+}
+
+export async function adminLinkIdentity(
+  userId: string,
+  providerName: string,
+  subject: string,
+  email: string,
+  displayName: string,
+): Promise<void> {
+  return apiFetch<void>(`/api/admin/users/${encodeURIComponent(userId)}/identities`, {
+    method: 'POST',
+    body: JSON.stringify({
+      provider_name: providerName,
+      subject,
+      email,
+      display_name: displayName,
+    }),
+  });
+}
+
+export async function adminUnlinkIdentity(
+  userId: string,
+  providerName: string,
+  subject: string,
+): Promise<void> {
+  return apiFetch<void>(
+    `/api/admin/users/${encodeURIComponent(userId)}/identities/${encodeURIComponent(providerName)}/${encodeURIComponent(subject)}`,
+    { method: 'DELETE' },
+  );
 }
 
 // ── Admin: Overview ──

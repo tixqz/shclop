@@ -137,11 +137,92 @@ Operational endpoints:
 
 Logs are JSON on stdout/stderr. The Helm values document VictoriaMetrics k8s-stack, VictoriaLogs, and Grafana as the recommended monitoring/logging stack, with 7-day retention defaults.
 
+## Auth settings
+
+The Admin → Auth tab controls the platform authentication mode and individual identity provider state.
+
+### Switching mode
+
+Three modes are available:
+
+- `local` — only local username+password login. SSO buttons are hidden from the login screen.
+- `sso` — only SSO. Local login is disabled for all accounts except the bootstrap admin (see Break-glass below).
+- `both` — both paths active. SSO users are JIT-provisioned on first sign-in with role `user`; local users still authenticate with their password.
+
+To change the mode, select the desired option in the Auth tab and save. The change takes effect immediately without a restart. The initial seed value comes from `auth.mode` in Helm values; subsequent changes are persisted in the database and survive chart upgrades.
+
+API shape:
+
+```http
+GET  /api/admin/auth-settings
+PATCH /api/admin/auth-settings
+```
+
+Example:
+
+```json
+{
+  "mode": "both"
+}
+```
+
+### Enabling and disabling individual providers
+
+Each configured IdP provider can be independently enabled or disabled in the Auth tab provider list. Disabling a provider hides its Sign-in button and rejects new sign-in attempts via that provider. Existing sessions remain valid until they expire.
+
+Use this to respond quickly to a compromised IdP without switching the entire platform to `local` mode.
+
+API shape:
+
+```http
+PATCH /api/admin/auth-settings/providers/{provider_name}
+```
+
+Example — disable a provider:
+
+```json
+{
+  "enabled": false
+}
+```
+
+### Account linking (identity management)
+
+When an IdP returns an email address that already belongs to a local Shclop user, the SSO callback returns `409 local_user_with_same_email_exists`. The sign-in is blocked until the admin explicitly links the external identity to the local account.
+
+To link an identity:
+
+1. Open Admin → Users and select the user.
+2. Open the Identities tab for that user.
+3. Click Link identity and select the provider and the external subject identifier.
+
+Once linked, the user can sign in via that IdP. Unlinking removes the association; the user falls back to their local password (if `local` or `both` mode is active).
+
+This explicit link requirement prevents IdP-side email-spoofing from silently capturing existing local accounts.
+
+API shape:
+
+```http
+GET    /api/admin/users/{user_id}/identities
+POST   /api/admin/users/{user_id}/identities
+DELETE /api/admin/users/{user_id}/identities/{identity_id}
+```
+
+### Break-glass access
+
+When auth mode is `sso`, the local login form is hidden. The bootstrap admin account (`SHCLOP_BOOTSTRAP_ADMIN_USERNAME`) can still sign in with its password via:
+
+```
+https://<shclop-host>/login?break_glass=1
+```
+
+Use this if the IdP is unavailable or misconfigured. The break-glass path bypasses the mode check and always shows the local login form. After recovery, return to `sso` mode via the Auth tab.
+
 ## Current limitations
 
 The current admin path does not include:
 
-- LDAP, OIDC, header auth, or SCIM;
+- LDAP, header auth, or SCIM;
 - workspaces or tenant/team mapping;
 - skill/catalog management;
 - MCP server management;

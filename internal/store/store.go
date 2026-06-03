@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +59,28 @@ type Store interface {
 
 	// Bootstrap
 	BootstrapAdmin(ctx context.Context, username, passwordHash string) error
+
+	// User Identities (OIDC linking)
+	GetUserIDByIdentity(ctx context.Context, providerName, subject string) (string, bool, error)
+	TouchIdentityLogin(ctx context.Context, providerName, subject string) error
+	CreateUserAndIdentity(ctx context.Context, args CreateUserAndIdentityArgs) (domain.User, error)
+	LinkIdentityToUser(ctx context.Context, userID, providerName, subject, email, displayName string) error
+	ListUserIdentities(ctx context.Context, userID string) ([]domain.UserIdentity, error)
+	UnlinkIdentity(ctx context.Context, userID, providerName, subject string) error
+
+	// App Settings
+	GetAppSetting(ctx context.Context, key string) (string, error)
+	SetAppSetting(ctx context.Context, key, value string) error
+	ListAppSettings(ctx context.Context, prefix string) (map[string]string, error)
+}
+
+type CreateUserAndIdentityArgs struct {
+	Username     string
+	Role         string
+	ProviderName string
+	Subject      string
+	Email        string
+	DisplayName  string
 }
 
 var ErrNotFound = errors.New("not found")
@@ -79,12 +103,16 @@ type Memory struct {
 	integrations      []domain.IntegrationConnection
 	agentIntegrations []domain.AgentIntegration
 	pluginManifests   map[string]domain.PluginManifest
+
+	userIdentities []domain.UserIdentity
+	appSettings    map[string]string
 }
 
 func NewMemory() *Memory {
 	return &Memory{
 		passwordHashes:  make(map[string]string),
 		pluginManifests: make(map[string]domain.PluginManifest),
+		appSettings:     map[string]string{"auth.mode": "local"},
 	}
 }
 
@@ -705,4 +733,184 @@ func newID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
+}
+
+// --- User Identities ---
+
+func (m *Memory) GetUserIDByIdentity(ctx context.Context, providerName, subject string) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range m.userIdentities {
+		if id.ProviderName == providerName && id.Subject == subject {
+			return id.UserID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (m *Memory) TouchIdentityLogin(ctx context.Context, providerName, subject string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, id := range m.userIdentities {
+		if id.ProviderName == providerName && id.Subject == subject {
+			now := time.Now().UTC()
+			m.userIdentities[i].LastLoginAt = &now
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *Memory) CreateUserAndIdentity(ctx context.Context, args CreateUserAndIdentityArgs) (domain.User, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.User{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, u := range m.users {
+		if u.Username == args.Username {
+			return domain.User{}, ErrConflict
+		}
+	}
+	for _, id := range m.userIdentities {
+		if id.ProviderName == args.ProviderName && id.Subject == args.Subject {
+			return domain.User{}, ErrConflict
+		}
+	}
+
+	userID, err := newID()
+	if err != nil {
+		return domain.User{}, err
+	}
+	now := time.Now().UTC()
+	user := domain.User{ID: userID, Username: args.Username, Role: args.Role, Disabled: false, CreatedAt: now, UpdatedAt: now}
+	m.users = append(m.users, user)
+	m.userIdentities = append(m.userIdentities, domain.UserIdentity{
+		ProviderName: args.ProviderName,
+		Subject:      args.Subject,
+		UserID:       userID,
+		Email:        args.Email,
+		DisplayName:  args.DisplayName,
+		LinkedAt:     now,
+	})
+	return user, nil
+}
+
+func (m *Memory) LinkIdentityToUser(ctx context.Context, userID, providerName, subject, email, displayName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	found := false
+	for _, u := range m.users {
+		if u.ID == userID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ErrNotFound
+	}
+
+	for _, id := range m.userIdentities {
+		if id.ProviderName == providerName && id.Subject == subject {
+			return ErrConflict
+		}
+	}
+
+	m.userIdentities = append(m.userIdentities, domain.UserIdentity{
+		ProviderName: providerName,
+		Subject:      subject,
+		UserID:       userID,
+		Email:        email,
+		DisplayName:  displayName,
+		LinkedAt:     time.Now().UTC(),
+	})
+	return nil
+}
+
+func (m *Memory) ListUserIdentities(ctx context.Context, userID string) ([]domain.UserIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var out []domain.UserIdentity
+	for _, id := range m.userIdentities {
+		if id.UserID == userID {
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ProviderName != out[j].ProviderName {
+			return out[i].ProviderName < out[j].ProviderName
+		}
+		return out[i].Subject < out[j].Subject
+	})
+	if out == nil {
+		return []domain.UserIdentity{}, nil
+	}
+	return out, nil
+}
+
+func (m *Memory) UnlinkIdentity(ctx context.Context, userID, providerName, subject string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for i, id := range m.userIdentities {
+		if id.UserID == userID && id.ProviderName == providerName && id.Subject == subject {
+			m.userIdentities = append(m.userIdentities[:i], m.userIdentities[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// --- App Settings ---
+
+func (m *Memory) GetAppSetting(ctx context.Context, key string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.appSettings[key], nil
+}
+
+func (m *Memory) SetAppSetting(ctx context.Context, key, value string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.appSettings[key] = value
+	return nil
+}
+
+func (m *Memory) ListAppSettings(ctx context.Context, prefix string) (map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]string)
+	for k, v := range m.appSettings {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			out[k] = v
+		}
+	}
+	return out, nil
 }

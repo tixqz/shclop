@@ -1,9 +1,24 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 )
+
+type IdPProviderConfig struct {
+	Name         string
+	DisplayName  string
+	Issuer       string
+	ClientID     string
+	ClientSecret string
+	RedirectURI  string
+	Scopes       []string
+	EmailClaim   string
+	NameClaim    string
+	GroupsClaim  string
+}
 
 type Config struct {
 	Addr                  string
@@ -51,9 +66,17 @@ type Config struct {
 
 	// Observability
 	GrafanaURL string
+
+	// OIDC SSO
+	IdPProviders  []IdPProviderConfig
+	AuthCookieKey string
 }
 
-func Default() Config {
+func Default() (Config, error) {
+	providers, err := parseIdPProviders()
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		Addr:                  ":8080",
 		Store:                 "inmemory",
@@ -99,7 +122,105 @@ func Default() Config {
 
 		// Observability
 		GrafanaURL: os.Getenv("SHCLOP_GRAFANA_URL"),
+
+		// OIDC SSO
+		IdPProviders:  providers,
+		AuthCookieKey: os.Getenv("SHCLOP_AUTH_COOKIE_KEY"),
+	}, nil
+}
+
+func (c Config) Validate() error {
+	if len(c.IdPProviders) > 0 && c.AuthCookieKey == "" && !c.Dev {
+		return errors.New("SHCLOP_AUTH_COOKIE_KEY must be set when IdP providers are configured")
 	}
+	for i, p := range c.IdPProviders {
+		if p.Name == "" {
+			return fmt.Errorf("idp provider %d: missing NAME", i)
+		}
+		if p.Issuer == "" {
+			return fmt.Errorf("idp provider %d: missing ISSUER", i)
+		}
+		if p.ClientID == "" {
+			return fmt.Errorf("idp provider %d: missing CLIENT_ID", i)
+		}
+		if p.ClientSecret == "" {
+			return fmt.Errorf("idp provider %d: missing CLIENT_SECRET", i)
+		}
+		if p.RedirectURI == "" {
+			return fmt.Errorf("idp provider %d: missing REDIRECT_URI", i)
+		}
+	}
+	return nil
+}
+
+func parseIdPProviders() ([]IdPProviderConfig, error) {
+	var providers []IdPProviderConfig
+	for n := range 32 {
+		prefix := fmt.Sprintf("SHCLOP_IDP_PROVIDER_%d", n)
+		name := os.Getenv(prefix + "_NAME")
+		if name == "" {
+			return providers, nil
+		}
+		issuer := os.Getenv(prefix + "_ISSUER")
+		if issuer == "" {
+			return nil, fmt.Errorf("idp provider %d: missing ISSUER", n)
+		}
+		clientID := os.Getenv(prefix + "_CLIENT_ID")
+		if clientID == "" {
+			return nil, fmt.Errorf("idp provider %d: missing CLIENT_ID", n)
+		}
+		clientSecret := os.Getenv(prefix + "_CLIENT_SECRET")
+		if clientSecret == "" {
+			return nil, fmt.Errorf("idp provider %d: missing CLIENT_SECRET", n)
+		}
+		redirectURI := os.Getenv(prefix + "_REDIRECT_URI")
+		if redirectURI == "" {
+			return nil, fmt.Errorf("idp provider %d: missing REDIRECT_URI", n)
+		}
+
+		displayName := os.Getenv(prefix + "_DISPLAY_NAME")
+		if displayName == "" {
+			displayName = "Sign in with " + name
+		}
+
+		scopes := parseScopes(os.Getenv(prefix + "_SCOPES"))
+
+		emailClaim := env(prefix+"_EMAIL_CLAIM", "email")
+		nameClaim := env(prefix+"_NAME_CLAIM", "name")
+		groupsClaim := env(prefix+"_GROUPS_CLAIM", "groups")
+
+		providers = append(providers, IdPProviderConfig{
+			Name:         name,
+			DisplayName:  displayName,
+			Issuer:       issuer,
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			RedirectURI:  redirectURI,
+			Scopes:       scopes,
+			EmailClaim:   emailClaim,
+			NameClaim:    nameClaim,
+			GroupsClaim:  groupsClaim,
+		})
+	}
+	return nil, errors.New("idp provider limit of 32 exceeded")
+}
+
+func parseScopes(raw string) []string {
+	if raw == "" {
+		return []string{"openid", "email", "profile"}
+	}
+	parts := strings.Split(raw, ",")
+	var scopes []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			scopes = append(scopes, p)
+		}
+	}
+	if len(scopes) == 0 {
+		return []string{"openid", "email", "profile"}
+	}
+	return scopes
 }
 
 func env(key, fallback string) string {

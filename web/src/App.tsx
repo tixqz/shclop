@@ -1,16 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   type Agent,
+  type AdminAuthSettings,
   type AdminOverview,
+  type AuthMode,
+  type AuthProvidersResponse,
   type ChatEvent,
   type IntegrationProvider,
   type LLMGatewaySettings,
   type LLMModel,
   type User,
+  type UserIdentity,
   getStoredToken,
   clearToken,
   login,
+  logout,
   getMe,
+  getAuthProviders,
   listAgents,
   createAgent,
   startAgent,
@@ -30,12 +36,17 @@ import {
   adminGetGateway,
   adminPatchGateway,
   adminGetOverview,
+  adminGetAuthSettings,
+  adminPatchAuthSettings,
+  adminListUserIdentities,
+  adminLinkIdentity,
+  adminUnlinkIdentity,
   registerAuthErrorHandler,
 } from './api';
 
 type Page = 'agents' | 'integrations' | 'admin';
 
-type AdminTab = 'overview' | 'users' | 'models' | 'gateway';
+type AdminTab = 'overview' | 'users' | 'models' | 'gateway' | 'auth';
 
 type IntegrationsView = 'list' | 'add' | 'detail';
 type AddStep = 'picker' | 'form';
@@ -165,6 +176,25 @@ export default function App() {
   const [gatewayFormSecretKey, setGatewayFormSecretKey] = useState('');
   const [gatewaySaving, setGatewaySaving] = useState(false);
 
+  // admin auth settings
+  const [adminAuthSettings, setAdminAuthSettings] = useState<AdminAuthSettings | null>(null);
+  const [authModeForm, setAuthModeForm] = useState<AuthMode>('local');
+  const [authSettingsSaving, setAuthSettingsSaving] = useState(false);
+
+  // user identities modal
+  const [identitiesUserId, setIdentitiesUserId] = useState('');
+  const [identitiesUsername, setIdentitiesUsername] = useState('');
+  const [userIdentities, setUserIdentities] = useState<UserIdentity[]>([]);
+  const [identitiesLoading, setIdentitiesLoading] = useState(false);
+  const [identityLinkProvider, setIdentityLinkProvider] = useState('');
+  const [identityLinkSubject, setIdentityLinkSubject] = useState('');
+  const [identityLinkEmail, setIdentityLinkEmail] = useState('');
+  const [identityLinkDisplay, setIdentityLinkDisplay] = useState('');
+  const [identityLinking, setIdentityLinking] = useState(false);
+
+  // login SSO providers
+  const [authProviders, setAuthProviders] = useState<AuthProvidersResponse | null>(null);
+
   // status
   const [statusError, setStatusError] = useState('');
 
@@ -225,6 +255,15 @@ export default function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
+
+  // ── Auth providers (public, fetch on mount or when token cleared) ──
+
+  useEffect(() => {
+    if (token) return;
+    getAuthProviders()
+      .then(setAuthProviders)
+      .catch(() => {});
+  }, [token]);
 
   // ── Auth session ──
 
@@ -298,17 +337,26 @@ export default function App() {
       setLoginPassword('');
       setPage('agents');
     } catch (err: unknown) {
-      setLoginError(err instanceof Error ? err.message : 'Login failed');
+      const msg = err instanceof Error ? err.message : 'Login failed';
+      if (msg === 'local_login_disabled') {
+        setLoginError('Local login is disabled. Use SSO to sign in.');
+      } else {
+        setLoginError(msg);
+      }
     } finally {
       setLoggingIn(false);
     }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
     disconnectRef.current?.();
     disconnectRef.current = null;
     wsRef.current = null;
-    clearToken();
+    try {
+      await logout();
+    } catch {
+      clearToken();
+    }
     setToken('');
     setUser(null);
     setAgents([]);
@@ -319,6 +367,7 @@ export default function App() {
     setAdminUsers([]);
     setAdminModels([]);
     setAdminGateway(null);
+    setAdminAuthSettings(null);
     setAvailableModels([]);
     setIntegrationProviders([]);
     setFieldValues({});
@@ -587,6 +636,9 @@ export default function App() {
     adminGetGateway()
       .then(setAdminGateway)
       .catch(() => {});
+    adminGetAuthSettings()
+      .then((s) => { setAdminAuthSettings(s); setAuthModeForm(s.mode); })
+      .catch(() => {});
   }
 
   useEffect(() => {
@@ -698,9 +750,102 @@ export default function App() {
     }
   }
 
+  async function handleSaveAuthMode() {
+    setAuthSettingsSaving(true);
+    setStatusError('');
+    try {
+      const updated = await adminPatchAuthSettings({ mode: authModeForm });
+      setAdminAuthSettings(updated);
+      setAuthModeForm(updated.mode);
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to save auth mode');
+    } finally {
+      setAuthSettingsSaving(false);
+    }
+  }
+
+  async function handleToggleProvider(name: string, enabled: boolean) {
+    setStatusError('');
+    try {
+      const updated = await adminPatchAuthSettings({ providers: [{ name, enabled }] });
+      setAdminAuthSettings(updated);
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to update provider');
+    }
+  }
+
+  async function handleOpenIdentities(userId: string, username: string) {
+    setIdentitiesUserId(userId);
+    setIdentitiesUsername(username);
+    setIdentitiesLoading(true);
+    setIdentityLinkProvider('');
+    setIdentityLinkSubject('');
+    setIdentityLinkEmail('');
+    setIdentityLinkDisplay('');
+    try {
+      const list = await adminListUserIdentities(userId);
+      setUserIdentities(list);
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to load identities');
+      setUserIdentities([]);
+    } finally {
+      setIdentitiesLoading(false);
+    }
+  }
+
+  function handleCloseIdentities() {
+    setIdentitiesUserId('');
+    setIdentitiesUsername('');
+    setUserIdentities([]);
+  }
+
+  async function handleLinkIdentity() {
+    if (!identityLinkProvider.trim() || !identityLinkSubject.trim()) return;
+    setIdentityLinking(true);
+    setStatusError('');
+    try {
+      await adminLinkIdentity(
+        identitiesUserId,
+        identityLinkProvider.trim(),
+        identityLinkSubject.trim(),
+        identityLinkEmail.trim(),
+        identityLinkDisplay.trim(),
+      );
+      setIdentityLinkProvider('');
+      setIdentityLinkSubject('');
+      setIdentityLinkEmail('');
+      setIdentityLinkDisplay('');
+      const list = await adminListUserIdentities(identitiesUserId);
+      setUserIdentities(list);
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to link identity');
+    } finally {
+      setIdentityLinking(false);
+    }
+  }
+
+  async function handleUnlinkIdentity(providerName: string, subject: string) {
+    setStatusError('');
+    try {
+      await adminUnlinkIdentity(identitiesUserId, providerName, subject);
+      const list = await adminListUserIdentities(identitiesUserId);
+      setUserIdentities(list);
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to unlink identity');
+    }
+  }
+
   // ── Render ──
 
   if (!token) {
+    const breakGlass = new URLSearchParams(window.location.search).get('break_glass') === '1';
+    const authMode = authProviders?.mode ?? 'local';
+    const showLocalForm = authMode === 'local' || authMode === 'both' || breakGlass;
+    const ssoProviders = authProviders?.providers ?? [];
+    const readyProviders = ssoProviders.filter((p) => p.enabled && p.status === 'ready');
+    const degradedProviders = ssoProviders.filter((p) => p.enabled && p.status === 'degraded');
+    const showSsoButtons = (authMode === 'sso' || authMode === 'both') && ssoProviders.length > 0;
+
     return (
       <main className="shell">
         <div className="login-page">
@@ -709,42 +854,77 @@ export default function App() {
               <h1>Shclop</h1>
               <p>Self-hosted agent control plane</p>
             </div>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleLogin();
-              }}
-            >
-              <div className="form-group">
-                <label htmlFor="username">Username</label>
-                <input
-                  id="username"
-                  type="text"
-                  value={loginUsername}
-                  onChange={(e) => setLoginUsername(e.target.value)}
-                  autoFocus
-                  placeholder="admin"
-                />
+
+            {showSsoButtons ? (
+              <div className="sso-buttons">
+                {readyProviders.map((p) => (
+                  <a
+                    key={p.name}
+                    href={`/api/auth/oidc/${encodeURIComponent(p.name)}/login?return_to=${encodeURIComponent('/')}`}
+                    className="btn btn-primary btn-block sso-btn"
+                  >
+                    Sign in with {p.display_name}
+                  </a>
+                ))}
+                {degradedProviders.map((p) => (
+                  <button
+                    key={p.name}
+                    className="btn btn-ghost btn-block sso-btn"
+                    disabled
+                    title={p.error ?? 'Provider unavailable'}
+                  >
+                    Sign in with {p.display_name} (unavailable)
+                  </button>
+                ))}
               </div>
-              <div className="form-group">
-                <label htmlFor="password">Password</label>
-                <input
-                  id="password"
-                  type="password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  placeholder="••••••••"
-                />
-              </div>
-              {loginError ? <div className="form-error">{loginError}</div> : null}
-              <button
-                type="submit"
-                className="btn btn-primary btn-block"
-                disabled={loggingIn}
+            ) : null}
+
+            {showSsoButtons && showLocalForm ? (
+              <div className="sso-divider"><span>or</span></div>
+            ) : null}
+
+            {showLocalForm ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleLogin();
+                }}
               >
-                {loggingIn ? 'Signing in…' : 'Sign in'}
-              </button>
-            </form>
+                <div className="form-group">
+                  <label htmlFor="username">Username</label>
+                  <input
+                    id="username"
+                    type="text"
+                    value={loginUsername}
+                    onChange={(e) => setLoginUsername(e.target.value)}
+                    autoFocus
+                    placeholder="admin"
+                  />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="password">Password</label>
+                  <input
+                    id="password"
+                    type="password"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    placeholder="••••••••"
+                  />
+                </div>
+                {loginError ? <div className="form-error">{loginError}</div> : null}
+                <button
+                  type="submit"
+                  className="btn btn-primary btn-block"
+                  disabled={loggingIn}
+                >
+                  {loggingIn ? 'Signing in…' : 'Sign in'}
+                </button>
+              </form>
+            ) : null}
+
+            {!showLocalForm && loginError ? (
+              <div className="form-error">{loginError}</div>
+            ) : null}
           </div>
         </div>
       </main>
@@ -1074,6 +1254,12 @@ export default function App() {
               >
                 LLM Gateway
               </button>
+              <button
+                className={`admin-tab ${adminTab === 'auth' ? 'active' : ''}`}
+                onClick={() => setAdminTab('auth')}
+              >
+                Auth
+              </button>
             </div>
 
             {/* Overview tab */}
@@ -1266,6 +1452,13 @@ export default function App() {
                               >
                                 {u.disabled ? 'Enable' : 'Disable'}
                               </button>
+                              {' '}
+                              <button
+                                className="btn btn-sm btn-ghost"
+                                onClick={() => handleOpenIdentities(u.id, u.username)}
+                              >
+                                Identities
+                              </button>
                             </td>
                           </tr>
                         ))
@@ -1447,6 +1640,202 @@ export default function App() {
                 </div>
               </div>
             ) : null}
+
+            {/* Auth tab */}
+            {adminTab === 'auth' ? (
+              <div className="admin-section">
+                <h2>Authentication</h2>
+
+                {/* Mode section */}
+                <div className="card card-form">
+                  <h3 style={{ fontWeight: 600, marginBottom: 12 }}>Login Mode</h3>
+                  <div className="form-group">
+                    {(['local', 'sso', 'both'] as AuthMode[]).map((m) => (
+                      <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <input
+                          type="radio"
+                          name="auth-mode"
+                          value={m}
+                          checked={authModeForm === m}
+                          onChange={() => setAuthModeForm(m)}
+                        />
+                        {m === 'local' ? 'Local only' : m === 'sso' ? 'SSO only' : 'Both (local + SSO)'}
+                      </label>
+                    ))}
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleSaveAuthMode}
+                    disabled={authSettingsSaving || authModeForm === adminAuthSettings?.mode}
+                  >
+                    {authSettingsSaving ? 'Saving…' : 'Save mode'}
+                  </button>
+                </div>
+
+                {/* Providers table */}
+                {adminAuthSettings && adminAuthSettings.providers.length > 0 ? (
+                  <div className="card card-table">
+                    <h3 style={{ fontWeight: 600, marginBottom: 12 }}>OIDC Providers</h3>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Display Name</th>
+                          <th>Status</th>
+                          <th>Enabled</th>
+                          <th>Last Error</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminAuthSettings.providers.map((p) => (
+                          <tr key={p.name}>
+                            <td className="cell-mono">{p.name}</td>
+                            <td>{p.display_name}</td>
+                            <td>
+                              {p.status === 'ready' ? (
+                                <span className="badge badge-active">Ready</span>
+                              ) : (
+                                <span className="badge badge-disabled">Degraded</span>
+                              )}
+                            </td>
+                            <td>
+                              <label className="toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={p.enabled}
+                                  onChange={(e) => handleToggleProvider(p.name, e.target.checked)}
+                                />
+                                <span className="toggle-slider" />
+                              </label>
+                            </td>
+                            <td className="cell-mono" style={{ color: 'var(--danger)', fontSize: '0.8rem' }}>
+                              {p.error ?? ''}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : adminAuthSettings ? (
+                  <div className="empty-state" style={{ marginTop: 16 }}>No OIDC providers configured.</div>
+                ) : (
+                  <div className="empty-state" style={{ marginTop: 16 }}>Loading…</div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── User Identities Modal ── */}
+      {identitiesUserId ? (
+        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) handleCloseIdentities(); }}>
+          <div className="modal" style={{ maxWidth: 700 }}>
+            <div className="modal-head">
+              <h2>Identities — {identitiesUsername}</h2>
+              <button className="btn btn-ghost btn-sm modal-close" onClick={handleCloseIdentities}>✕</button>
+            </div>
+            <div className="modal-body">
+              {identitiesLoading ? (
+                <div className="empty-state">Loading…</div>
+              ) : (
+                <div className="card card-table" style={{ marginBottom: 16 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Provider</th>
+                        <th>Subject</th>
+                        <th>Email</th>
+                        <th>Display Name</th>
+                        <th>Linked</th>
+                        <th>Last Login</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userIdentities.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="cell-empty">No linked identities.</td>
+                        </tr>
+                      ) : (
+                        userIdentities.map((id) => (
+                          <tr key={`${id.provider_name}:${id.subject}`}>
+                            <td className="cell-mono">{id.provider_name}</td>
+                            <td className="cell-mono">{id.subject}</td>
+                            <td>{id.email}</td>
+                            <td>{id.display_name}</td>
+                            <td className="cell-ts">{timeAgo(id.linked_at)}</td>
+                            <td className="cell-ts">{id.last_login_at ? timeAgo(id.last_login_at) : '—'}</td>
+                            <td>
+                              <button
+                                className="btn btn-sm btn-danger"
+                                onClick={() => handleUnlinkIdentity(id.provider_name, id.subject)}
+                              >
+                                Unlink
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <h3 style={{ fontWeight: 600, marginBottom: 10 }}>Link Identity</h3>
+              <div className="form-row form-row-inline">
+                <div className="form-group">
+                  <label>Provider name</label>
+                  <input
+                    type="text"
+                    value={identityLinkProvider}
+                    onChange={(e) => setIdentityLinkProvider(e.target.value)}
+                    placeholder="github"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Subject</label>
+                  <input
+                    type="text"
+                    value={identityLinkSubject}
+                    onChange={(e) => setIdentityLinkSubject(e.target.value)}
+                    placeholder="12345"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Email</label>
+                  <input
+                    type="text"
+                    value={identityLinkEmail}
+                    onChange={(e) => setIdentityLinkEmail(e.target.value)}
+                    placeholder="user@example.com"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Display name</label>
+                  <input
+                    type="text"
+                    value={identityLinkDisplay}
+                    onChange={(e) => setIdentityLinkDisplay(e.target.value)}
+                    placeholder="Jane Doe"
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={handleCloseIdentities}>Close</button>
+              <button
+                className="btn btn-primary"
+                onClick={handleLinkIdentity}
+                disabled={
+                  identityLinking ||
+                  !identityLinkProvider.trim() ||
+                  !identityLinkSubject.trim()
+                }
+              >
+                {identityLinking ? 'Linking…' : 'Link identity'}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

@@ -1645,3 +1645,37 @@ tbody tr:hover {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+
+/* ── SSO login ── */
+
+.sso-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.sso-btn {
+  text-align: center;
+  text-decoration: none;
+}
+
+.sso-divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin: 12px 0;
+}
+
+.sso-divider::before,
+.sso-divider::after {
+  content: '';
+  flex: 1;
+  border-bottom: 1px solid var(--border);
+}
+
+.sso-divider span {
+  padding: 0 10px;
+}

@@ -610,6 +610,198 @@ func (p *Postgres) DeletePluginManifest(ctx context.Context, id string) error {
 	return nil
 }
 
+// --- User Identities ---
+
+func (p *Postgres) GetUserIDByIdentity(ctx context.Context, providerName, subject string) (string, bool, error) {
+	var userID string
+	err := p.db.QueryRowContext(ctx,
+		`select user_id from user_identities where provider_name = $1 and subject = $2`,
+		providerName, subject,
+	).Scan(&userID)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return userID, true, nil
+}
+
+func (p *Postgres) TouchIdentityLogin(ctx context.Context, providerName, subject string) error {
+	res, err := p.db.ExecContext(ctx,
+		`update user_identities set last_login_at = now() where provider_name = $1 and subject = $2`,
+		providerName, subject,
+	)
+	if err != nil {
+		return fmt.Errorf("touch identity login: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *Postgres) CreateUserAndIdentity(ctx context.Context, args CreateUserAndIdentityArgs) (domain.User, error) {
+	userID, err := newID()
+	if err != nil {
+		return domain.User{}, err
+	}
+	now := time.Now().UTC()
+
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.User{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var u domain.User
+	err = tx.QueryRowContext(ctx,
+		`insert into users (id, username, password_hash, role, disabled, created_at, updated_at)
+		 values ($1, $2, '', $3, false, $4, $4)
+		 returning id, username, role, disabled, created_at, updated_at`,
+		userID, args.Username, args.Role, now,
+	).Scan(&u.ID, &u.Username, &u.Role, &u.Disabled, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return domain.User{}, ErrConflict
+		}
+		return domain.User{}, fmt.Errorf("create user in tx: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`insert into user_identities (provider_name, subject, user_id, email, display_name, linked_at)
+		 values ($1, $2, $3, $4, $5, $6)`,
+		args.ProviderName, args.Subject, userID, args.Email, args.DisplayName, now,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return domain.User{}, ErrConflict
+		}
+		return domain.User{}, fmt.Errorf("insert identity in tx: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.User{}, fmt.Errorf("commit tx: %w", err)
+	}
+	return u, nil
+}
+
+func (p *Postgres) LinkIdentityToUser(ctx context.Context, userID, providerName, subject, email, displayName string) error {
+	var exists bool
+	err := p.db.QueryRowContext(ctx, `select exists(select 1 from users where id = $1)`, userID).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("check user exists: %w", err)
+	}
+	if !exists {
+		return ErrNotFound
+	}
+
+	_, err = p.db.ExecContext(ctx,
+		`insert into user_identities (provider_name, subject, user_id, email, display_name, linked_at)
+		 values ($1, $2, $3, $4, $5, now())`,
+		providerName, subject, userID, email, displayName,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return ErrConflict
+		}
+		return fmt.Errorf("link identity: %w", err)
+	}
+	return nil
+}
+
+func (p *Postgres) ListUserIdentities(ctx context.Context, userID string) ([]domain.UserIdentity, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`select provider_name, subject, user_id, email, display_name, linked_at, last_login_at
+		 from user_identities where user_id = $1 order by provider_name asc, subject asc`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.UserIdentity
+	for rows.Next() {
+		var id domain.UserIdentity
+		var lastLogin sql.NullTime
+		if err := rows.Scan(&id.ProviderName, &id.Subject, &id.UserID, &id.Email, &id.DisplayName, &id.LinkedAt, &lastLogin); err != nil {
+			return nil, err
+		}
+		if lastLogin.Valid {
+			t := lastLogin.Time
+			id.LastLoginAt = &t
+		}
+		out = append(out, id)
+	}
+	if out == nil {
+		return []domain.UserIdentity{}, nil
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) UnlinkIdentity(ctx context.Context, userID, providerName, subject string) error {
+	res, err := p.db.ExecContext(ctx,
+		`delete from user_identities where user_id = $1 and provider_name = $2 and subject = $3`,
+		userID, providerName, subject,
+	)
+	if err != nil {
+		return fmt.Errorf("unlink identity: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// --- App Settings ---
+
+func (p *Postgres) GetAppSetting(ctx context.Context, key string) (string, error) {
+	var value string
+	err := p.db.QueryRowContext(ctx, `select value from app_settings where key = $1`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get app setting: %w", err)
+	}
+	return value, nil
+}
+
+func (p *Postgres) SetAppSetting(ctx context.Context, key, value string) error {
+	_, err := p.db.ExecContext(ctx,
+		`insert into app_settings (key, value, updated_at) values ($1, $2, now())
+		 on conflict (key) do update set value = $2, updated_at = now()`,
+		key, value,
+	)
+	if err != nil {
+		return fmt.Errorf("set app setting: %w", err)
+	}
+	return nil
+}
+
+func (p *Postgres) ListAppSettings(ctx context.Context, prefix string) (map[string]string, error) {
+	var rows *sql.Rows
+	var err error
+	if prefix == "" {
+		rows, err = p.db.QueryContext(ctx, `select key, value from app_settings order by key asc`)
+	} else {
+		rows, err = p.db.QueryContext(ctx, `select key, value from app_settings where key like $1 || '%' order by key asc`, prefix)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list app settings: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
 // --- Bootstrap ---
 
 func (p *Postgres) BootstrapAdmin(ctx context.Context, username, passwordHash string) error {

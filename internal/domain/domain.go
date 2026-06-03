@@ -174,3 +174,39 @@ type Message struct {
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// AuthMode is the global authentication mode.
+// Valid values: "local", "sso", "both".
+type AuthMode string
+
+const (
+	AuthModeLocal AuthMode = "local"
+	AuthModeSSO   AuthMode = "sso"
+	AuthModeBoth  AuthMode = "both"
+)
+
+// UserIdentity is a record linking a local User to an external IdP subject.
+type UserIdentity struct {
+	ProviderName string
+	Subject      string
+	UserID       string
+	Email        string
+	DisplayName  string
+	LinkedAt     time.Time
+	LastLoginAt  *time.Time // nil if never logged in after linking
+}
+
+// IdPProviderSummary is the public, non-secret view of a configured IdP.
+type IdPProviderSummary struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Status      string `json:"status"` // "ready" | "degraded"
+	Error       string `json:"error,omitempty"`
+	Enabled     bool   `json:"enabled"`
+}
+
+// AuthSettings is the admin-visible auth configuration.
+type AuthSettings struct {
+	Mode      AuthMode             `json:"mode"`
+	Providers []IdPProviderSummary `json:"providers"`
+}

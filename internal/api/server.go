@@ -25,6 +25,7 @@ import (
 	"github.com/mipopov/shclop/internal/controllers"
 	"github.com/mipopov/shclop/internal/domain"
 	"github.com/mipopov/shclop/internal/gateway"
+	"github.com/mipopov/shclop/internal/identity"
 	"github.com/mipopov/shclop/internal/integrations"
 	k8sapi "github.com/mipopov/shclop/internal/k8s"
 	"github.com/mipopov/shclop/internal/plugins"
@@ -56,6 +57,8 @@ type Server struct {
 	runtime      *gateway.RuntimeRegistry
 	sandbox      sandbox.RuntimeProvider
 	integrations *integrations.Service
+	idpRegistry  identity.IdPRegistry
+	cookieCodec  *auth.CookieCodec
 	tokens       map[string]string
 	tokenMu      sync.Mutex
 	activityMu   sync.Mutex
@@ -246,6 +249,51 @@ func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
 
 	integrationService := integrations.NewService(openedStore, secretBox, merged, mcpResolver, logger)
 
+	oidcConfigs := make([]identity.OIDCProviderConfig, len(cfg.IdPProviders))
+	for i, p := range cfg.IdPProviders {
+		oidcConfigs[i] = identity.OIDCProviderConfig{
+			Name:         p.Name,
+			DisplayName:  p.DisplayName,
+			Issuer:       p.Issuer,
+			ClientID:     p.ClientID,
+			ClientSecret: p.ClientSecret,
+			RedirectURI:  p.RedirectURI,
+			Scopes:       p.Scopes,
+			EmailClaim:   p.EmailClaim,
+			NameClaim:    p.NameClaim,
+			GroupsClaim:  p.GroupsClaim,
+		}
+	}
+	idpReg, err := identity.NewIdPRegistry(serverCtx, oidcConfigs, openedStore, 60*time.Second, logger)
+	if err != nil {
+		serverCancel()
+		return nil, fmt.Errorf("idp registry: %w", err)
+	}
+	if err := idpReg.Run(serverCtx); err != nil {
+		serverCancel()
+		return nil, fmt.Errorf("idp registry run: %w", err)
+	}
+
+	var cookieCodec *auth.CookieCodec
+	if cfg.AuthCookieKey != "" {
+		cookieCodec, err = auth.NewCookieCodecFromConfig(cfg.AuthCookieKey)
+		if err != nil {
+			serverCancel()
+			return nil, fmt.Errorf("cookie codec: %w", err)
+		}
+	} else {
+		var ephemeralKey [32]byte
+		if _, err := rand.Read(ephemeralKey[:]); err != nil {
+			serverCancel()
+			return nil, fmt.Errorf("ephemeral cookie key: %w", err)
+		}
+		cookieCodec, err = auth.NewCookieCodec(ephemeralKey[:])
+		if err != nil {
+			serverCancel()
+			return nil, fmt.Errorf("cookie codec ephemeral: %w", err)
+		}
+	}
+
 	server := &Server{
 		cfg:          cfg,
 		auth:         authService,
@@ -253,6 +301,8 @@ func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
 		runtime:      gateway.NewRuntimeRegistry(),
 		sandbox:      sandboxProvider,
 		integrations: integrationService,
+		idpRegistry:  idpReg,
+		cookieCodec:  cookieCodec,
 		tokens:       map[string]string{},
 		logger:       logger,
 		metrics:      metrics,
@@ -421,6 +471,9 @@ func (s *Server) routes() http.Handler {
 
 	// Auth
 	mux.HandleFunc("/api/auth/login", s.handleLogin)
+	mux.HandleFunc("/api/auth/providers", s.handleListAuthProviders)
+	mux.HandleFunc("/api/auth/logout", s.handleLogout)
+	mux.HandleFunc("/api/auth/oidc/", s.handleOIDCRoute)
 
 	// Current user
 	mux.HandleFunc("/api/me", s.handleMe)
@@ -443,6 +496,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/admin/models/", s.handleAdminModel)
 	mux.HandleFunc("/api/admin/llm-gateway", s.handleAdminLLMGateway)
 	mux.HandleFunc("/api/admin/overview", s.handleAdminOverview)
+	mux.HandleFunc("/api/admin/auth-settings", s.handleAuthSettings)
 	mux.HandleFunc("/api/admin/plugins", s.handleAdminPlugins)
 	mux.HandleFunc("/api/admin/plugins/", s.handleAdminPlugin)
 
@@ -499,6 +553,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.bootstrapAdmin()
+
+	if s.idpRegistry.Mode() == domain.AuthModeSSO {
+		http.Error(w, "local login disabled", http.StatusForbidden)
+		return
+	}
 
 	var request struct {
 		Username string `json:"username"`
@@ -1174,16 +1233,35 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminUser(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/users/")
-	userID := strings.TrimSpace(strings.Trim(path, "/"))
-	if userID == "" {
-		http.NotFound(w, r)
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 1 && parts[0] != "" {
+		if r.Method == http.MethodPatch {
+			s.handleAdminUpdateUser(w, r, parts[0])
+			return
+		}
+		methodNotAllowed(w, http.MethodPatch)
 		return
 	}
-	if r.Method == http.MethodPatch {
-		s.handleAdminUpdateUser(w, r, userID)
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "identities" {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleAdminListIdentities(w, r, parts[0])
+		case http.MethodPost:
+			s.handleAdminLinkIdentity(w, r, parts[0])
+		default:
+			methodNotAllowed(w, "GET, POST")
+		}
 		return
 	}
-	methodNotAllowed(w, http.MethodPatch)
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "identities" && parts[2] != "" && parts[3] != "" {
+		if r.Method == http.MethodDelete {
+			s.handleAdminUnlinkIdentity(w, r, parts[0], parts[2], parts[3])
+			return
+		}
+		methodNotAllowed(w, http.MethodDelete)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, targetUserID string) {

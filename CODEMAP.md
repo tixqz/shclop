@@ -1,4 +1,5 @@
-### cmd/mock-runtime/main.go
+## cmd/mock-runtime/main.go
+  1:package main
   16:type Envelope struct {
   25:func main() {
   90:func generateResponse(input, flavor string) string {
@@ -6,18 +7,8 @@
   128:func taskText(payload map[string]any) string {
   139:func env(key, fallback string) string {
 
-### cmd/shclop-runtime/main_test.go
-  12:func TestRuntimeTokenFromEnvPrefersFile(t *testing.T) {
-  25:func TestRuntimeTokenFromEnvFallsBackToEnv(t *testing.T) {
-  33:func TestTaskTextExtractsPayloadText(t *testing.T) {
-  40:func TestClawEventToEnvelopeMapsError(t *testing.T) {
-  51:func TestClawEventToEnvelopeMapsUnknownTypeToError(t *testing.T) {
-  62:func TestIsTerminalEnvelope(t *testing.T) {
-  71:func TestClawEventToEnvelopeMapsMissingTerminalToError(t *testing.T) {
-  82:type assertError string
-  84:func (e assertError) Error() string { return string(e) }
-
-### cmd/shclop-runtime/main.go
+## cmd/shclop-runtime/main.go
+  1:package main
   15:func main() {
   100:func adapterForRuntime(runtimeName string) claw.Adapter {
   115:func taskText(payload map[string]any) string {
@@ -26,184 +17,140 @@
   152:func env(key, fallback string) string {
   159:func runtimeTokenFromEnv() string {
 
-### cmd/shclop/main.go
+## cmd/shclop/main.go
+  1:package main
   12:func main() {
 
-### internal/api/demo_flow_test.go
-  14:func TestFunctionalDemoRoutesBrowserTaskThroughRuntime(t *testing.T) {
+## internal/api/oidc.go
+  1:package api
+  21:const oidcStateCookieName = "shclop_oidc_state"
+  23:func (s *Server) handleListAuthProviders(w http.ResponseWriter, r *http.Request) {
+  45:func (s *Server) handleOIDCRoute(w http.ResponseWriter, r *http.Request) {
+  72:func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request, providerName string) {
+  136:func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request, providerName string) {
+  260:func (s *Server) linkOrCreateUser(ctx context.Context, providerName, subject, email, displayName string) (domain.User, error) {
+  298:func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+  330:func (s *Server) handleAuthSettings(w http.ResponseWriter, r *http.Request) {
+  341:func (s *Server) handleGetAuthSettings(w http.ResponseWriter, r *http.Request) {
+  370:func (s *Server) handlePatchAuthSettings(w http.ResponseWriter, r *http.Request) {
+  428:func (s *Server) handleAdminListIdentities(w http.ResponseWriter, r *http.Request, userID string) {
+  450:func (s *Server) handleAdminLinkIdentity(w http.ResponseWriter, r *http.Request, userID string) {
+  496:func (s *Server) handleAdminUnlinkIdentity(w http.ResponseWriter, r *http.Request, userID, providerName, subject string) {
+  524:type userIdentityJSON struct {
+  534:func toIdentityJSON(ids []domain.UserIdentity) []userIdentityJSON {
+  550:func sanitizeReturnTo(returnTo string) string {
 
-### internal/api/runtime_ws_test.go
-  14:func TestRuntimeWebSocketAcceptsRuntimeHello(t *testing.T) {
-  62:func TestRuntimeWebSocketRequiresToken(t *testing.T) {
+## internal/api/server.go
+  1:package api
+  39:var wsUpgrader = websocket.Upgrader{CheckOrigin: sameOriginOrNoOrigin}
+  41:func sameOriginOrNoOrigin(r *http.Request) bool {
+  53:type Server struct {
+  74:type MetricsCollectors struct {
+  89:func newMetricsCollectors() *MetricsCollectors {
+  155:type activityEntry struct {
+  164:func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
+  320:func (s *Server) requireBootstrapPassword() error {
+  330:func (s *Server) bootstrapAdmin() {
+  374:func requestContext() requestCtx {
+  378:type requestCtx struct{}
+  380:func (requestCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
+  381:func (requestCtx) Done() <-chan struct{}       { return nil }
+  382:func (requestCtx) Err() error                  { return nil }
+  383:func (requestCtx) Value(key any) any           { return nil }
+  385:func sandboxProviderFromConfig(cfg config.Config) (sandbox.RuntimeProvider, error) {
+  417:func (s *Server) ListenAndServe() error {
+  432:func (s *Server) Handler() http.Handler {
+  436:func (s *Server) withMetrics(next http.Handler) http.Handler {
+  447:type statusWriter struct {
+  452:func (sw *statusWriter) WriteHeader(code int) {
+  457:func (sw *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+  464:func (s *Server) routes() http.Handler {
+  517:func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+  525:func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+  539:func (s *Server) handleMetrics() http.Handler {
+  550:func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+  594:func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+  608:func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
+  619:func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
+  656:func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
+  717:func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
+  733:func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+  755:func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+  901:func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+  939:func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+  973:func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
+  981:func (s *Server) handleIntegration(w http.ResponseWriter, r *http.Request) {
+  1006:func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
+  1020:func (s *Server) handleConnectIntegration(w http.ResponseWriter, r *http.Request, providerID string) {
+  1070:func (s *Server) handleDisconnectIntegration(w http.ResponseWriter, r *http.Request, providerID string) {
+  1086:func (s *Server) handleAgentIntegration(w http.ResponseWriter, r *http.Request, agentID, providerID string) {
+  1153:func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
+  1164:func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
+  1184:func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
+  1234:func (s *Server) handleAdminUser(w http.ResponseWriter, r *http.Request) {
+  1267:func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, targetUserID string) {
+  1306:func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+  1315:func (s *Server) handleListEnabledModels(w http.ResponseWriter, r *http.Request) {
+  1370:func (s *Server) fetchLiteLLMModels(ctx context.Context, baseURL, apiKey string) (map[string]bool, error) {
+  1416:func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
+  1427:func (s *Server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
+  1447:func (s *Server) handleAdminCreateModel(w http.ResponseWriter, r *http.Request) {
+  1480:func (s *Server) handleAdminModel(w http.ResponseWriter, r *http.Request) {
+  1494:func (s *Server) handleAdminUpdateModel(w http.ResponseWriter, r *http.Request, modelID string) {
+  1527:func (s *Server) handleAdminLLMGateway(w http.ResponseWriter, r *http.Request) {
+  1538:func (s *Server) handleAdminGetLLMGateway(w http.ResponseWriter, r *http.Request) {
+  1555:func (s *Server) handleAdminUpdateLLMGateway(w http.ResponseWriter, r *http.Request) {
+  1585:func (s *Server) handleAdminPlugins(w http.ResponseWriter, r *http.Request) {
+  1596:func (s *Server) handleAdminPlugin(w http.ResponseWriter, r *http.Request) {
+  1613:func (s *Server) handleAdminListPlugins(w http.ResponseWriter, r *http.Request) {
+  1633:func (s *Server) handleAdminUpsertPlugin(w http.ResponseWriter, r *http.Request, pathID string) {
+  1692:func (s *Server) handleAdminDeletePlugin(w http.ResponseWriter, r *http.Request, pluginID string) {
+  1713:func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
+  1749:func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+  1761:func (s *Server) recordActivity(eventType, actorID, agentID, message string, details map[string]any) {
+  1774:func (s *Server) activitySnapshot() []activityEntry {
+  1780:func (s *Server) activityForUser(user domain.User) []activityEntry {
+  1796:func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+  1882:func (s *Server) handleRuntimeWebSocket(w http.ResponseWriter, r *http.Request) {
+  1928:func (s *Server) validRuntimeToken(agentID, secret string) bool {
+  1936:func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (domain.User, bool) {
+  1958:func (s *Server) requireUserFromRequest(w http.ResponseWriter, r *http.Request) (domain.User, bool) {
+  1981:func (s *Server) enforceCurrentUser(w http.ResponseWriter, r *http.Request, cached domain.User) (domain.User, bool) {
+  1994:func chatEventResponse(event gateway.Envelope) map[string]any {
+  2009:func (s *Server) writeStoreError(w http.ResponseWriter, err error) {
+  2016:func (s *Server) writeJSON(w http.ResponseWriter, status int, value any) {
+  2022:func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {
+  2050:func writeJSON(w http.ResponseWriter, status int, value any) error {
+  2063:func methodNotAllowed(w http.ResponseWriter, allow string) {
+  2068:func randomSecret() (string, error) {
+  2076:func randomHexID() string {
 
-### internal/api/server_test.go
-  18:func TestHealthz(t *testing.T) {
-  31:func TestReadyz(t *testing.T) {
-  44:func TestMetricsEnabled(t *testing.T) {
-  59:func TestMetricsDisabled(t *testing.T) {
-  71:func TestLoginAndGetMe(t *testing.T) {
-  108:func TestBrowserWebSocketRejectsQueryToken(t *testing.T) {
-  121:func TestLoginInvalidCredentials(t *testing.T) {
-  133:func TestAdminCreateUser(t *testing.T) {
-  170:func TestAdminDisableUser(t *testing.T) {
-  204:func TestAgentsCreateAndList(t *testing.T) {
-  259:func TestAgentRequiresValidRuntime(t *testing.T) {
-  272:func TestAdminModels(t *testing.T) {
-  330:func TestAdminLLMGateway(t *testing.T) {
-  356:func TestAdminOverview(t *testing.T) {
-  383:func TestActivity(t *testing.T) {
-  409:func TestModels_EnabledModels(t *testing.T) {
-  481:func TestModels_GatewayDiscovery_FiltersByGateway(t *testing.T) {
-  554:func TestModels_GatewayDiscovery_FailsWith502(t *testing.T) {
-  589:func TestModels_GatewayDiscovery_NoGatewayConfig(t *testing.T) {
-  630:func TestAgentsRequireAuth(t *testing.T) {
-  643:func TestWrongMethods(t *testing.T) {
-  672:func TestServesFrontend(t *testing.T) {
-  703:func TestRequireBootstrapPassword_ProductionConfigRequiresPassword(t *testing.T) {
-  722:func TestRequireBootstrapPassword_DevConfigAllowsDefaultPassword(t *testing.T) {
-  736:func TestRequireBootstrapPassword_InmemoryStoreAllowsDefaultPassword(t *testing.T) {
-  750:func TestRequireBootstrapPassword_MockProviderAllowsDefaultPassword(t *testing.T) {
-  764:func TestRequireBootstrapPassword_EnvVarSetAllowsProduction(t *testing.T) {
-  779:func TestStartAgentWithModelRequiresFullyConfiguredGateway(t *testing.T) {
-  811:func TestStartAgentWithModelAcceptsInternalGatewayWithoutSecret(t *testing.T) {
-  845:func TestStopAgentRevokesRuntimeToken(t *testing.T) {
-  889:func TestIntegrations_ListReturnsProviders(t *testing.T) {
-  922:func TestIntegrations_ConnectAndDisconnectGitHub(t *testing.T) {
-  1022:func TestIntegrations_RequiresAuth(t *testing.T) {
-  1044:func TestIntegrations_AgentToggleEnforceOwnership(t *testing.T) {
-  1142:func TestIntegrations_AgentToggleRequiresConnection(t *testing.T) {
-  1163:func newTestGitHubServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request)) *httptest.Server {
-  1176:func newTestServer() *Server {
-  1180:func newTestServerWithConfig(cfg config.Config) *Server {
-  1191:func newTestServerWithGitHub(t *testing.T, validateURL string) *Server {
-  1213:func githubManifestYAML(validateURL string) string {
-  1251:func loginAsAdmin(t *testing.T, server *Server) string {
-  1256:func loginAs(t *testing.T, server *Server, username, password string) string {
-  1268:func doJSON(t *testing.T, server *Server, method, path string, payload any, token string) *httptest.ResponseRecorder {
-  1291:func assertJSONField(t *testing.T, body []byte, key string, want string) string {
-  1304:func assertJSONObject(t *testing.T, body []byte, key string) map[string]any {
-  1317:func assertJSONArray(t *testing.T, body []byte, key string) []map[string]any {
-
-### internal/api/server.go
-  38:var wsUpgrader = websocket.Upgrader{CheckOrigin: sameOriginOrNoOrigin}
-  40:func sameOriginOrNoOrigin(r *http.Request) bool {
-  52:type Server struct {
-  71:type MetricsCollectors struct {
-  86:func newMetricsCollectors() *MetricsCollectors {
-  152:type activityEntry struct {
-  161:func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
-  270:func (s *Server) requireBootstrapPassword() error {
-  280:func (s *Server) bootstrapAdmin() {
-  324:func requestContext() requestCtx {
-  328:type requestCtx struct{}
-  330:func (requestCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
-  331:func (requestCtx) Done() <-chan struct{}       { return nil }
-  332:func (requestCtx) Err() error                  { return nil }
-  333:func (requestCtx) Value(key any) any           { return nil }
-  335:func sandboxProviderFromConfig(cfg config.Config) (sandbox.RuntimeProvider, error) {
-  367:func (s *Server) ListenAndServe() error {
-  382:func (s *Server) Handler() http.Handler {
-  386:func (s *Server) withMetrics(next http.Handler) http.Handler {
-  397:type statusWriter struct {
-  402:func (sw *statusWriter) WriteHeader(code int) {
-  407:func (sw *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-  414:func (s *Server) routes() http.Handler {
-  463:func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-  471:func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
-  485:func (s *Server) handleMetrics() http.Handler {
-  496:func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-  535:func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-  549:func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
-  560:func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
-  597:func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
-  658:func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
-  674:func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request, agentID string) {
-  696:func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentID string) {
-  842:func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request, agentID string) {
-  880:func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request, agentID string) {
-  914:func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
-  922:func (s *Server) handleIntegration(w http.ResponseWriter, r *http.Request) {
-  947:func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
-  961:func (s *Server) handleConnectIntegration(w http.ResponseWriter, r *http.Request, providerID string) {
-  1011:func (s *Server) handleDisconnectIntegration(w http.ResponseWriter, r *http.Request, providerID string) {
-  1027:func (s *Server) handleAgentIntegration(w http.ResponseWriter, r *http.Request, agentID, providerID string) {
-  1094:func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
-  1105:func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
-  1125:func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
-  1175:func (s *Server) handleAdminUser(w http.ResponseWriter, r *http.Request) {
-  1189:func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, targetUserID string) {
-  1228:func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-  1237:func (s *Server) handleListEnabledModels(w http.ResponseWriter, r *http.Request) {
-  1292:func (s *Server) fetchLiteLLMModels(ctx context.Context, baseURL, apiKey string) (map[string]bool, error) {
-  1338:func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
-  1349:func (s *Server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
-  1369:func (s *Server) handleAdminCreateModel(w http.ResponseWriter, r *http.Request) {
-  1402:func (s *Server) handleAdminModel(w http.ResponseWriter, r *http.Request) {
-  1416:func (s *Server) handleAdminUpdateModel(w http.ResponseWriter, r *http.Request, modelID string) {
-  1449:func (s *Server) handleAdminLLMGateway(w http.ResponseWriter, r *http.Request) {
-  1460:func (s *Server) handleAdminGetLLMGateway(w http.ResponseWriter, r *http.Request) {
-  1477:func (s *Server) handleAdminUpdateLLMGateway(w http.ResponseWriter, r *http.Request) {
-  1507:func (s *Server) handleAdminPlugins(w http.ResponseWriter, r *http.Request) {
-  1518:func (s *Server) handleAdminPlugin(w http.ResponseWriter, r *http.Request) {
-  1535:func (s *Server) handleAdminListPlugins(w http.ResponseWriter, r *http.Request) {
-  1555:func (s *Server) handleAdminUpsertPlugin(w http.ResponseWriter, r *http.Request, pathID string) {
-  1614:func (s *Server) handleAdminDeletePlugin(w http.ResponseWriter, r *http.Request, pluginID string) {
-  1635:func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
-  1671:func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
-  1683:func (s *Server) recordActivity(eventType, actorID, agentID, message string, details map[string]any) {
-  1696:func (s *Server) activitySnapshot() []activityEntry {
-  1702:func (s *Server) activityForUser(user domain.User) []activityEntry {
-  1718:func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-  1804:func (s *Server) handleRuntimeWebSocket(w http.ResponseWriter, r *http.Request) {
-  1850:func (s *Server) validRuntimeToken(agentID, secret string) bool {
-  1858:func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (domain.User, bool) {
-  1880:func (s *Server) requireUserFromRequest(w http.ResponseWriter, r *http.Request) (domain.User, bool) {
-  1903:func (s *Server) enforceCurrentUser(w http.ResponseWriter, r *http.Request, cached domain.User) (domain.User, bool) {
-  1916:func chatEventResponse(event gateway.Envelope) map[string]any {
-  1931:func (s *Server) writeStoreError(w http.ResponseWriter, err error) {
-  1938:func (s *Server) writeJSON(w http.ResponseWriter, status int, value any) {
-  1944:func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {
-  1972:func writeJSON(w http.ResponseWriter, status int, value any) error {
-  1985:func methodNotAllowed(w http.ResponseWriter, allow string) {
-  1990:func randomSecret() (string, error) {
-  1998:func randomHexID() string {
-
-### internal/auth/auth_test.go
-  12:type testStore struct {
-  17:func newTestStore() *testStore {
-  24:func (s *testStore) addUser(id, username, password, role string) {
-  34:func (s *testStore) GetUserByUsername(_ context.Context, username string) (domain.User, error) {
-  42:func (s *testStore) GetUser(_ context.Context, userID string) (domain.User, error) {
-  51:func (s *testStore) GetPasswordHash(_ context.Context, username string) (string, error) {
-  59:func (s *testStore) SetPasswordHash(_ context.Context, username, hash string) error {
-  64:var errNotFound = &testError{"not found"}
-  66:type testError struct{ msg string }
-  68:func (e *testError) Error() string { return e.msg }
-  70:func TestLoginSuccess(t *testing.T) {
-  96:func TestLoginInvalidPassword(t *testing.T) {
-  107:func TestLoginUnknownUser(t *testing.T) {
-  117:func TestResolveInvalidToken(t *testing.T) {
-  127:func TestLoginDisabledUser(t *testing.T) {
-  145:func TestTokenIsolation(t *testing.T) {
-
-### internal/auth/auth.go
+## internal/auth/auth.go
+  1:package auth
   15:type PasswordHasher interface {
   21:type UserStore interface {
   26:type Service struct {
   33:func NewService(store UserStore, hasher PasswordHasher) *Service {
   41:func (s *Service) Login(ctx context.Context, username, password string) (domain.User, string, error) {
   71:func (s *Service) Resolve(token string) (domain.User, bool) {
-  78:func tokenID() (string, error) {
+  79:func (s *Service) IssueToken(user domain.User) (string, error) {
+  91:func (s *Service) Revoke(token string) bool {
+  101:func tokenID() (string, error) {
 
-### internal/claw/adapter_test.go
-  11:func TestDemoAdapterEmitsStructuredEvents(t *testing.T) {
-  27:func TestSubprocessAdapterStreamsStdout(t *testing.T) {
-  59:func TestSubprocessAdapterStreamsLongOutput(t *testing.T) {
-  89:func TestSubprocessAdapterReportsNonZeroExit(t *testing.T) {
-  110:func TestSubprocessAdapterClosesOnCanceledContext(t *testing.T) {
-  134:func TestSubprocessAdapterClosesWhenGrandchildHoldsPipes(t *testing.T) {
+## internal/auth/cookiecodec.go
+  1:package auth
+  17:var ErrExpired = errors.New("oidc state cookie expired")
+  18:var ErrInvalidCookie = errors.New("oidc state cookie invalid")
+  20:type OIDCStateCookie struct {
+  29:type CookieCodec struct {
+  34:func NewCookieCodec(rawKey []byte) (*CookieCodec, error) {
+  49:func NewCookieCodecFromConfig(configKey string) (*CookieCodec, error) {
+  56:func (c *CookieCodec) SetClock(fn func() time.Time) {
+  60:func (c *CookieCodec) Encode(payload OIDCStateCookie) (string, error) {
+  84:func (c *CookieCodec) Decode(encoded string) (OIDCStateCookie, error) {
 
-### internal/claw/adapter.go
+## internal/claw/adapter.go
+  1:package claw
   5:type Task struct {
   10:type EventType string
   12:const (
@@ -212,7 +159,8 @@
   30:type DemoAdapter struct{ Flavor string }
   32:func (a DemoAdapter) Run(ctx context.Context, task Task) (<-chan Event, error) {
 
-### internal/claw/nanoclaw.go
+## internal/claw/nanoclaw.go
+  1:package claw
   16:type NanoclawAdapter struct{}
   19:type OpenclawAdapter struct{}
   21:func (a NanoclawAdapter) Run(ctx context.Context, task Task) (<-chan Event, error) {
@@ -223,14 +171,8 @@
   150:func testWritable(dir string) bool {
   164:func nanoclawEnv() []string {
 
-### internal/claw/openai_test.go
-  14:func TestOpenAIAdapterReturnsErrorWithoutEnv(t *testing.T) {
-  33:func TestOpenAIAdapterReturnsTextResponse(t *testing.T) {
-  103:func TestOpenAIAdapterExecutesBashTool(t *testing.T) {
-  190:func TestOpenAIAdapterHandlesAPIError(t *testing.T) {
-  224:func TestOpenAIAdapterContextCancellation(t *testing.T) {
-
-### internal/claw/openai.go
+## internal/claw/openai.go
+  1:package claw
   21:type OpenAIAdapter struct{}
   23:const systemPrompt = `You are an AI agent running inside a Linux container. You have full shell access via the bash tool.
   37:var bashTool = map[string]any{
@@ -239,29 +181,24 @@
   72:func (a OpenAIAdapter) Run(ctx context.Context, task Task) (<-chan Event, error) {
   231:func runBash(ctx context.Context, command string) (string, error) {
 
-### internal/claw/subprocess.go
+## internal/claw/subprocess.go
+  1:package claw
   12:type SubprocessAdapter struct {
   18:func (a SubprocessAdapter) Run(ctx context.Context, task Task) (<-chan Event, error) {
 
-### internal/config/config_test.go
-  5:func TestEnvBool(t *testing.T) {
+## internal/config/config.go
+  1:package config
+  10:type IdPProviderConfig struct {
+  23:type Config struct {
+  75:func Default() (Config, error) {
+  132:func (c Config) Validate() error {
+  156:func parseIdPProviders() ([]IdPProviderConfig, error) {
+  208:func parseScopes(raw string) []string {
+  226:func env(key, fallback string) string {
+  233:func envBool(key string, fallback bool) bool {
 
-### internal/config/config.go
-  8:type Config struct {
-  56:func Default() Config {
-  105:func env(key, fallback string) string {
-  112:func envBool(key string, fallback bool) bool {
-
-### internal/controllers/mcpserver_controller_test.go
-  22:var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
-  24:func makeTestMCPServer(name, namespace, image string, port int32, replicas int32) *unstructured.Unstructured {
-  51:func newTestSetup(t *testing.T, ns string, objs ...*unstructured.Unstructured) (*k8s.Client, cache.SharedIndexInformer, context.CancelFunc) {
-  95:func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
-  107:func TestReconcileCreatesDeploymentServiceNetworkPolicy(t *testing.T) {
-  196:func TestReconcileIdempotent(t *testing.T) {
-  231:func TestReconcileCleanup(t *testing.T) {
-
-### internal/controllers/mcpserver_controller.go
+## internal/controllers/mcpserver_controller.go
+  1:package controllers
   24:const fieldManager = "shclop-mcp-controller"
   28:type MCPServerController struct {
   38:func NewMCPServerController(client *k8s.Client, informer cache.SharedIndexInformer, namespace string, logger *slog.Logger) *MCPServerController {
@@ -276,7 +213,8 @@
   313:func (c *MCPServerController) updateStatus(ctx context.Context, cr *k8s.MCPServer) {
   338:func (c *MCPServerController) cleanup(ctx context.Context, ns, crName string) error {
 
-### internal/domain/domain.go
+## internal/domain/domain.go
+  1:package domain
   6:type PluginManifest struct {
   17:type IntegrationConnection struct {
   33:type AgentIntegration struct {
@@ -296,23 +234,23 @@
   156:type AdminHealthStatus struct {
   162:type CreateAgentInput struct {
   170:type Message struct {
+  180:type AuthMode string
+  182:const (
+  189:type UserIdentity struct {
+  200:type IdPProviderSummary struct {
+  209:type AuthSettings struct {
 
-### internal/gateway/envelope.go
+## internal/gateway/envelope.go
+  1:package gateway
   3:type Envelope struct {
 
-### internal/gateway/mock_runtime_test.go
-  13:func TestMockRuntimeStreamsResponse(t *testing.T) {
-  27:func TestRegistryDropsEventsFromWrongAgent(t *testing.T) {
-  48:func TestRegistryDropsEventsFromStaleConnection(t *testing.T) {
-  72:func TestRegistryCancelDoesNotPanicDispatch(t *testing.T) {
-  87:func TestRegistryUnregisterCompletesPendingWaiter(t *testing.T) {
-  111:func pipeWebSocket(t *testing.T) (*websocket.Conn, *websocket.Conn) {
-
-### internal/gateway/mock_runtime.go
+## internal/gateway/mock_runtime.go
+  1:package gateway
   3:type MockRuntime struct{}
   5:func (MockRuntime) Respond(agentID, sessionID, messageID, text string) []Envelope {
 
-### internal/gateway/registry.go
+## internal/gateway/registry.go
+  1:package gateway
   10:var ErrRuntimeNotConnected = errors.New("runtime not connected")
   12:type RuntimeRegistry struct {
   18:type waiterKey struct {
@@ -330,16 +268,8 @@
   134:func (r *RuntimeRegistry) failWaitersLocked(agentID, reason string) {
   144:func (r *RuntimeRegistry) removeWaiter(key waiterKey) {
 
-### internal/identity/mockyaml_test.go
-  10:func TestMockYAMLProviderAuthenticatesAndMapsPrincipal(t *testing.T) {
-  40:func TestMockYAMLProviderRejectsInvalidPassword(t *testing.T) {
-  50:func TestMockYAMLProviderRejectsUsersWithoutPassword(t *testing.T) {
-  64:func TestStaticOrganizationMapperRejectsMissingTenant(t *testing.T) {
-  71:func TestStaticOrganizationMapperRejectsMissingSubject(t *testing.T) {
-  78:func writeMockIdentityConfig(t *testing.T) string {
-  97:func contains(values []string, target string) bool {
-
-### internal/identity/mockyaml.go
+## internal/identity/mockyaml.go
+  1:package identity
   13:var ErrInvalidCredentials = errors.New("invalid credentials")
   15:type MockYAMLProvider struct {
   19:type MockYAMLUserSummary struct {
@@ -353,22 +283,48 @@
   119:func (StaticOrganizationMapper) Map(ctx context.Context, identity Identity) (MappedPrincipal, error) {
   143:func splitClaim(value string) []string {
 
-### internal/identity/provider.go
+## internal/identity/oidc.go
+  1:package identity
+  13:type OIDCProviderConfig struct {
+  27:type OIDCProvider struct {
+  35:func NewOIDCProvider(ctx context.Context, cfg OIDCProviderConfig) (*OIDCProvider, error) {
+  80:func (p *OIDCProvider) Name() string { return p.Config.Name }
+  84:func (p *OIDCProvider) Authenticate(_ context.Context, _ AuthRequest) (Identity, error) {
+  90:func (p *OIDCProvider) IdentityFromIDToken(idToken *oidc.IDToken) (Identity, error) {
+  122:func stringClaim(raw map[string]any, key string) (string, error) {
+  136:func coerceGroups(v any) []string {
+
+## internal/identity/provider.go
+  1:package identity
   5:type AuthRequest struct {
   12:type Identity struct {
   20:type MappedPrincipal struct {
   29:type IdentityProvider interface {
   34:type OrganizationMapper interface {
 
-### internal/integrations/secretbox_test.go
-  8:func TestSecretBoxRoundTrip(t *testing.T) {
-  32:func TestSecretBoxDifferentKeys(t *testing.T) {
-  48:func TestSecretBoxTamperedCiphertext(t *testing.T) {
-  67:func TestSecretBoxDeterministicKeyDerivation(t *testing.T) {
-  90:func TestNewSecretBoxFromConfigDevFallback(t *testing.T) {
-  110:func TestNewSecretBoxFromConfigWithEnvKey(t *testing.T) {
+## internal/identity/registry.go
+  1:package identity
+  14:type ProviderStatus string
+  16:const (
+  22:type MaterializedProvider struct {
+  31:type SettingsReader interface {
+  37:type IdPRegistry interface {
+  47:type idpRegistry struct {
+  65:func NewIdPRegistry(ctx context.Context, configs []OIDCProviderConfig, settings SettingsReader, retryInterval time.Duration, logger *slog.Logger) (IdPRegistry, error) {
+  108:func (r *idpRegistry) applyOverlay(ctx context.Context) error {
+  135:func (r *idpRegistry) Get(name string) (*MaterializedProvider, bool) {
+  146:func (r *idpRegistry) List() []*MaterializedProvider {
+  160:func (r *idpRegistry) Mode() domain.AuthMode {
+  166:func (r *idpRegistry) Subscribe() <-chan struct{} {
+  175:func (r *idpRegistry) Reload(ctx context.Context) error {
+  207:func (r *idpRegistry) Run(ctx context.Context) error {
+  225:func (r *idpRegistry) retryDegraded(ctx context.Context) {
+  273:func (r *idpRegistry) Close() {}
+  275:func (r *idpRegistry) broadcast() {
+  290:var _ IdPRegistry = (*idpRegistry)(nil)
 
-### internal/integrations/secretbox.go
+## internal/integrations/secretbox.go
+  1:package integrations
   16:type SecretBox struct {
   24:func NewSecretBox(rawKey []byte) *SecretBox {
   44:func NewSecretBoxFromConfig(configKey string) (*SecretBox, error) {
@@ -377,29 +333,8 @@
   107:func (b *SecretBox) EncryptToString(plaintext []byte) (string, error) {
   116:func (b *SecretBox) DecryptFromString(encoded string) ([]byte, error) {
 
-### internal/integrations/service_test.go
-  21:type fakeRegistry struct {
-  28:func newFakeRegistry(src string) *fakeRegistry {
-  36:func (f *fakeRegistry) set(id string, m plugins.Manifest) {
-  46:func (f *fakeRegistry) Get(id string) (plugins.Resolved, bool) {
-  56:func (f *fakeRegistry) List() []plugins.Resolved {
-  66:func (f *fakeRegistry) Subscribe() <-chan struct{} { return f.notifyCh }
-  67:func (f *fakeRegistry) Run(_ context.Context) error { return nil }
-  74:func httpTemplateManifest(id, baseURL string) plugins.Manifest {
-  110:func httpTemplateMCPManifest(id, baseURL string) plugins.Manifest {
-  126:func newTestService(t *testing.T, reg plugins.Registry) (*Service, *store.Memory) {
-  139:func fakeGitHubServer(t *testing.T) *httptest.Server {
-  162:func TestConnect_HappyPath_HTTPTemplate(t *testing.T) {
-  206:func TestConnect_ValidationFailure(t *testing.T) {
-  232:func TestConnect_UnregisteredProvider(t *testing.T) {
-  246:func TestDisconnect_OrphanedConnection(t *testing.T) {
-  274:func TestBuildSummary_OrphanedCredential(t *testing.T) {
-  318:func TestToggleAgentIntegration(t *testing.T) {
-  347:func TestResolveAgentRuntime_HTTPTemplate_Env(t *testing.T) {
-  382:func TestResolveAgentRuntime_ExternalMCP(t *testing.T) {
-  421:func TestResolveAgentRuntime_UnregisteredPlugin(t *testing.T) {
-
-### internal/integrations/service.go
+## internal/integrations/service.go
+  1:package integrations
   14:type Store = store.Store
   18:type AgentRuntimeResolution struct {
   25:type Service struct {
@@ -417,7 +352,8 @@
   299:func toFormFieldSummaries(fields []plugins.FormField) []domain.FormFieldSummary {
   316:func toMCPServerSummaries(refs []plugins.MCPRef) []domain.MCPServerSummary {
 
-### internal/k8s/clientset.go
+## internal/k8s/clientset.go
+  1:package k8s
   15:type Client struct {
   22:func NewClient(kubeconfig string, namespace string) (*Client, error) {
   55:func (c *Client) IntegrationPlugins() dynamic.ResourceInterface {
@@ -425,7 +361,8 @@
   65:func UnstructuredToIntegrationPlugin(u *unstructured.Unstructured) (*IntegrationPlugin, error) {
   74:func UnstructuredToMCPServer(u *unstructured.Unstructured) (*MCPServer, error) {
 
-### internal/k8s/informers.go
+## internal/k8s/informers.go
+  1:package k8s
   13:type Factory struct {
   20:func NewFactory(client *Client, namespace string, resync time.Duration) *Factory {
   34:func (f *Factory) IntegrationPluginInformer() cache.SharedIndexInformer {
@@ -433,26 +370,14 @@
   44:func (f *Factory) Start(stopCh <-chan struct{}) {
   51:func (f *Factory) WaitForCacheSync(stopCh <-chan struct{}) bool {
 
-### internal/k8s/scheme.go
+## internal/k8s/scheme.go
+  1:package k8s
   9:var (
   15:func init() {
   22:func addKnownTypes(scheme *runtime.Scheme) error {
 
-### internal/k8s/types_test.go
-  13:func sampleIntegrationPlugin() *IntegrationPlugin {
-  49:func sampleMCPServer() *MCPServer {
-  83:func TestIntegrationPluginDeepCopy_DifferentPointer(t *testing.T) {
-  95:func TestIntegrationPluginDeepCopy_Isolation(t *testing.T) {
-  120:func TestIntegrationPluginDeepCopyObject_Kind(t *testing.T) {
-  138:func TestIntegrationPluginListDeepCopy(t *testing.T) {
-  157:func TestMCPServerDeepCopy_DifferentPointer(t *testing.T) {
-  169:func TestMCPServerDeepCopy_Isolation(t *testing.T) {
-  184:func TestMCPServerDeepCopyObject_Kind(t *testing.T) {
-  199:func TestMCPServerListDeepCopy(t *testing.T) {
-  218:func TestUnstructuredRoundTrip_IntegrationPlugin(t *testing.T) {
-  257:func TestUnstructuredRoundTrip_MCPServer(t *testing.T) {
-
-### internal/k8s/types.go
+## internal/k8s/types.go
+  1:package k8s
   10:const (
   15:var (
   30:type IntegrationPlugin struct {
@@ -495,23 +420,12 @@
   349:func (in *MCPServerList) DeepCopy() *MCPServerList {
   358:func (in *MCPServerList) DeepCopyInto(out *MCPServerList) {
 
-### internal/logging/logging.go
+## internal/logging/logging.go
+  1:package logging
   8:func New(level string) *slog.Logger {
 
-### internal/plugins/crd_registry_test.go
-  30:func crdTestSetup(t *testing.T, logger *slog.Logger) (
-  72:func buildIntegrationPlugin(name, displayName string) *k8s.IntegrationPlugin {
-  124:func toUnstructured(t *testing.T, ip *k8s.IntegrationPlugin) *unstructured.Unstructured {
-  136:func waitGet(reg *CRDRegistry, id string, timeout time.Duration) (Resolved, bool) {
-  148:func waitGone(reg *CRDRegistry, id string, timeout time.Duration) bool {
-  160:func drainSubscriber(ch <-chan struct{}) {
-  170:func TestCRDRegistryAdd(t *testing.T) {
-  198:func TestCRDRegistryUpdate(t *testing.T) {
-  238:func TestCRDRegistryDelete(t *testing.T) {
-  270:func TestCRDRegistryMalformedSpec(t *testing.T) {
-  317:func TestCRDRegistryGoneAfterDeleteConfirmPolling(t *testing.T) {
-
-### internal/plugins/crd_registry.go
+## internal/plugins/crd_registry.go
+  1:package plugins
   18:type CRDRegistry struct {
   33:func NewCRDRegistry(informer cache.SharedIndexInformer, logger *slog.Logger) *CRDRegistry {
   43:func (r *CRDRegistry) Get(id string) (Resolved, bool) {
@@ -524,23 +438,8 @@
   161:func (r *CRDRegistry) delete(obj any) {
   189:func (r *CRDRegistry) broadcast() {
 
-### internal/plugins/db_registry_test.go
-  18:type fakeLister struct {
-  24:func newFakeLister(initial ...domain.PluginManifest) *fakeLister {
-  28:func (f *fakeLister) ListPluginManifests(_ context.Context, _ bool) ([]domain.PluginManifest, error) {
-  40:func (f *fakeLister) set(manifests ...domain.PluginManifest) {
-  46:func (f *fakeLister) setErr(err error) {
-  56:func dbTestManifest(id, displayName string) string {
-  82:const dbTestInterval = 50 * time.Millisecond
-  85:func waitDB(ch <-chan struct{}, timeout time.Duration) bool {
-  98:func TestDBRegistryInitialPollLoads(t *testing.T) {
-  134:func TestDBRegistryParseErrorKeepsPrior(t *testing.T) {
-  190:func TestDBRegistryChangeDetection(t *testing.T) {
-  227:func TestDBRegistryNoOpOnIdenticalSnapshot(t *testing.T) {
-  265:func TestDBRegistryStoreErrorTolerated(t *testing.T) {
-  321:func TestDBRegistryEmptyResultClears(t *testing.T) {
-
-### internal/plugins/db_registry.go
+## internal/plugins/db_registry.go
+  1:package plugins
   18:type ManifestLister interface {
   24:type DBRegistry struct {
   40:func NewDBRegistry(store ManifestLister, interval time.Duration, logger *slog.Logger) *DBRegistry {
@@ -551,21 +450,8 @@
   106:func (r *DBRegistry) poll(ctx context.Context) {
   176:func (r *DBRegistry) broadcast() {
 
-### internal/plugins/file_registry_test.go
-  13:func validManifestYAML(id, displayName string) string {
-  40:func writeYAML(t *testing.T, dir, filename, content string) string {
-  51:func waitNotify(ch <-chan struct{}, timeout time.Duration) bool {
-  60:func newTestLogger() *slog.Logger {
-  65:func TestInitialScanLoadsFiles(t *testing.T) {
-  92:func TestCreateNewFileFiresNotify(t *testing.T) {
-  122:func TestModifyFileFiresNotify(t *testing.T) {
-  154:func TestDeleteFileFiresNotify(t *testing.T) {
-  183:func TestMalformedFileKeepsPrevious(t *testing.T) {
-  221:func TestMissingDirDoesNotError(t *testing.T) {
-  237:func TestSkipDotFiles(t *testing.T) {
-  261:func TestDebounce(t *testing.T) {
-
-### internal/plugins/file_registry.go
+## internal/plugins/file_registry.go
+  1:package plugins
   17:type FileRegistry struct {
   34:func NewFileRegistry(dir string, logger *slog.Logger) *FileRegistry {
   45:func (r *FileRegistry) Get(id string) (Resolved, bool) {
@@ -576,19 +462,8 @@
   143:func (r *FileRegistry) scan() {
   224:func (r *FileRegistry) broadcast() {
 
-### internal/plugins/manifest_test.go
-  8:const githubManifestYAML = `
-  37:const sidecarManifestYAML = `
-  59:func TestParseManifest_GitHub(t *testing.T) {
-  123:func TestParseManifest_Sidecar(t *testing.T) {
-  142:func TestParseManifest_ScopesDefaulting(t *testing.T) {
-  171:type rejectCase struct {
-  177:func TestParseManifest_Reject(t *testing.T) {
-  394:func TestParseManifest_SandboxRejectsExec(t *testing.T) {
-  421:func TestParseManifest_SandboxRejectsEnv(t *testing.T) {
-  450:func TestParseTimeout(t *testing.T) {
-
-### internal/plugins/manifest.go
+## internal/plugins/manifest.go
+  1:package plugins
   14:type Manifest struct {
   21:type Metadata struct {
   26:type ManifestSpec struct {
@@ -608,17 +483,8 @@
   236:func sandboxedFuncs() template.FuncMap {
   251:func ParseTimeout(s string) (time.Duration, error) {
 
-### internal/plugins/mcp_resolver_test.go
-  20:var resolverLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
-  22:func makeMCPServerUnstructured(name, namespace, image string, port int64, serviceURL string) *unstructured.Unstructured {
-  40:func newResolverInformer(t *testing.T, ns string, objs ...*unstructured.Unstructured) (cache.SharedIndexInformer, context.CancelFunc) {
-  67:func TestResolveExternalMCP(t *testing.T) {
-  107:func TestResolveClusterRefPresent(t *testing.T) {
-  134:func TestResolveClusterRefAbsent(t *testing.T) {
-  153:func TestResolveClusterRefDerivedURL(t *testing.T) {
-  184:var _ = metav1.GetOptions{}
-
-### internal/plugins/mcp_resolver.go
+## internal/plugins/mcp_resolver.go
+  1:package plugins
   17:type ResolvedMCPServer struct {
   26:type MCPResolver struct {
   33:func NewMCPResolver(informer cache.SharedIndexInformer, namespace string, logger *slog.Logger) *MCPResolver {
@@ -628,24 +494,8 @@
   94:func (r *MCPResolver) resolveCluster(ref MCPRef, vars TemplateContext) (ResolvedMCPServer, error) {
   132:func (r *MCPResolver) renderEnvFrom(envFrom map[string]string, vars TemplateContext) (map[string]string, error) {
 
-### internal/plugins/registry_test.go
-  14:type fakeRegistry struct {
-  21:func newFake(src string) *fakeRegistry {
-  29:func (f *fakeRegistry) Set(id string, m Manifest) {
-  39:func (f *fakeRegistry) Remove(id string) {
-  49:func (f *fakeRegistry) Get(id string) (Resolved, bool) {
-  59:func (f *fakeRegistry) List() []Resolved {
-  69:func (f *fakeRegistry) Subscribe() <-chan struct{} {
-  73:func (f *fakeRegistry) Run(_ context.Context) error { return nil }
-  76:func minimalManifest(id, displayName string) Manifest {
-  105:func TestPrecedence(t *testing.T) {
-  142:func TestFallThroughOnRemoval(t *testing.T) {
-  186:func TestSubscribeReceivesOnChange(t *testing.T) {
-  212:func TestSubscribeNonBlocking(t *testing.T) {
-  245:func TestShadowLog(t *testing.T) {
-  308:func TestRunIdempotent(t *testing.T) {
-
-### internal/plugins/registry.go
+## internal/plugins/registry.go
+  1:package plugins
   15:type Resolved struct {
   21:type Registry interface {
   31:type MergedRegistry struct {
@@ -658,33 +508,16 @@
   191:func (m *MergedRegistry) broadcast() {
   206:func specHash(spec ManifestSpec) string {
 
-### internal/plugins/sidecar_test.go
-  14:func sidecarManifest(url, timeout string) *Manifest {
-  35:func TestSidecarClient_Validate_HappyPath(t *testing.T) {
-  91:func TestSidecarClient_Validate_StatusError(t *testing.T) {
-  114:func TestSidecarClient_Validate_Non2xx(t *testing.T) {
-  136:func TestSidecarClient_BuildEnv_HappyPath(t *testing.T) {
-  162:func TestSidecarClient_Validate_Timeout(t *testing.T) {
-  182:func TestSidecarClient_Validate_NetworkUnreachable(t *testing.T) {
-  200:func TestSidecarClient_Validate_WrongKind(t *testing.T) {
-
-### internal/plugins/sidecar.go
+## internal/plugins/sidecar.go
+  1:package plugins
   12:type SidecarClient struct {
   16:func NewSidecarClient() *SidecarClient {
   20:func (c *SidecarClient) httpClient() *http.Client {
   27:func (c *SidecarClient) Validate(ctx context.Context, m *Manifest, vars TemplateContext) (ValidationResult, error) {
   88:func (c *SidecarClient) BuildEnv(ctx context.Context, m *Manifest, vars TemplateContext) (map[string]string, error) {
 
-### internal/plugins/template_test.go
-  12:func makeHTTPManifest(t *testing.T, method, urlTemplate string, extraHeaders map[string]string, extract map[string]string) *Manifest {
-  46:func TestValidate_HappyPath(t *testing.T) {
-  88:func TestValidate_NonSuccessStatus(t *testing.T) {
-  107:func TestValidate_BadJSON(t *testing.T) {
-  126:func TestValidate_ContextCancellation(t *testing.T) {
-  157:func TestValidate_TemplateRenderingInURL(t *testing.T) {
-  183:func TestBuildEnv(t *testing.T) {
-
-### internal/plugins/template.go
+## internal/plugins/template.go
+  1:package plugins
   15:type TemplateContext struct {
   20:type ValidationResult struct {
   26:type HTTPEvaluator struct {
@@ -694,14 +527,8 @@
   129:func renderTemplate(name, tmpl string, vars TemplateContext) (string, error) {
   141:func jsonPath(root any, path string) (string, error) {
 
-### internal/sandbox/docker_demo_test.go
-  9:func TestDockerDemoProviderBuildsLocalRuntimeCommand(t *testing.T) {
-  39:func TestDockerDemoProviderIncludesIntegrationEnv(t *testing.T) {
-  72:func TestDockerDemoProviderRejectsUnknownRuntime(t *testing.T) {
-  79:type recordingRunner struct{ args []string }
-  81:func (r *recordingRunner) Run(ctx context.Context, args ...string) error {
-
-### internal/sandbox/docker_demo.go
+## internal/sandbox/docker_demo.go
+  1:package sandbox
   11:type StartRequest struct {
   24:type RuntimeLease struct {
   31:type RuntimeProvider interface {
@@ -714,12 +541,8 @@
   108:func normalizeRuntime(runtime string) string {
   116:func isKnownRuntime(runtime string) bool {
 
-### internal/sandbox/k8s_resources_test.go
-  5:func TestBuildWorkspacePVCDefaultsAndLabels(t *testing.T) {
-  21:func TestBuildWorkspacePVCRejectsInvalidSize(t *testing.T) {
-  27:func TestBuildRuntimePodHardeningAndVolumes(t *testing.T) {
-
-### internal/sandbox/k8s_resources.go
+## internal/sandbox/k8s_resources.go
+  1:package sandbox
   12:func BuildWorkspacePVC(agentID, sandboxID, storageClassName, size string) (*corev1.PersistentVolumeClaim, error) {
   38:func BuildRuntimePod(spec AgentPodSpec) *corev1.Pod {
   57:func buildRuntimeContainer(spec ContainerSpec) corev1.Container {
@@ -729,23 +552,8 @@
   135:func buildVolumes(volumes []VolumeSpec) []corev1.Volume {
   158:func boolPtr(v bool) *bool { return &v }
 
-### internal/sandbox/kubernetes_provider_test.go
-  21:func seedRunningPodReactor(client *fake.Clientset) {
-  40:func TestKubernetesRuntimeProviderStartCreatesSandboxResources(t *testing.T) {
-  115:func TestKubernetesRuntimeProviderStartSanitizesLabelsForUnsafeAgentID(t *testing.T) {
-  148:func TestKubernetesRuntimeProviderStartDoesNotReplaceExistingPodOrPVCSpec(t *testing.T) {
-  168:func TestNewKubernetesRuntimeProviderRejectsEmptyRuntimeClassName(t *testing.T) {
-  183:func TestKubernetesRuntimeProviderStartValidatesLLMGatewaySecret(t *testing.T) {
-  203:func TestKubernetesRuntimeProviderStartValidatesInputs(t *testing.T) {
-  217:func TestKubernetesRuntimeProviderStopDeletesResources(t *testing.T) {
-  247:func TestKubernetesRuntimeProviderStopRetainsPVC(t *testing.T) {
-  258:func TestKubernetesRuntimeProviderStopReturnsDeleteErrors(t *testing.T) {
-  271:func TestKubernetesRuntimeProviderStartWaitsForPodReady(t *testing.T) {
-  320:func TestKubernetesRuntimeProviderStartFailsOnPodReadyTimeout(t *testing.T) {
-  377:func TestKubernetesRuntimeProviderStartFailsOnPodFailedPhase(t *testing.T) {
-  431:func strPtr(s string) *string { return &s }
-
-### internal/sandbox/kubernetes_provider.go
+## internal/sandbox/kubernetes_provider.go
+  1:package sandbox
   20:type KubernetesRuntimeProviderConfig struct {
   39:type KubernetesRuntimeProvider struct {
   45:func NewKubernetesRuntimeProvider(cfg KubernetesRuntimeProviderConfig) (*KubernetesRuntimeProvider, error) {
@@ -768,21 +576,14 @@
   431:func (p *KubernetesRuntimeProvider) createOrUpdateNetworkPolicy(ctx context.Context, policy *networkingv1.NetworkPolicy) error {
   453:func (p *KubernetesRuntimeProvider) createOrUpdatePod(ctx context.Context, pod *corev1.Pod) error {
 
-### internal/sandbox/mock_runtime.go
+## internal/sandbox/mock_runtime.go
+  1:package sandbox
   5:type MockRuntimeProvider struct{}
   7:func (MockRuntimeProvider) Start(ctx context.Context, request StartRequest) (RuntimeLease, error) {
   15:func (MockRuntimeProvider) Stop(ctx context.Context, agentID string) error {
 
-### internal/sandbox/networkpolicy_test.go
-  10:func TestNetworkPolicySpecFromConfigParsesCIDRs(t *testing.T) {
-  26:func TestBuildRuntimeNetworkPolicyRestricted(t *testing.T) {
-  56:func TestBuildRuntimeNetworkPolicyDisabled(t *testing.T) {
-  66:func TestBuildRuntimeNetworkPolicyNoCIDRsKeepsEgressEmpty(t *testing.T) {
-  79:func TestBuildRuntimeNetworkPolicyAllowsBackendAndVault(t *testing.T) {
-  101:func TestBuildRuntimeNetworkPolicyAllowsDNSAndLLMGateway(t *testing.T) {
-  118:func hasPort(rules []networkingv1.NetworkPolicyEgressRule, port int32, protocol corev1.Protocol) bool {
-
-### internal/sandbox/networkpolicy.go
+## internal/sandbox/networkpolicy.go
+  1:package sandbox
   16:type NetworkPolicyMode string
   18:const (
   24:type EgressRule struct {
@@ -795,17 +596,8 @@
   131:func portOrNil(port int32) *intstr.IntOrString {
   136:func labelValue(value string) string {
 
-### internal/sandbox/podspec_test.go
-  8:func TestAgentPodSpecUsesKataAndHardening(t *testing.T) {
-  81:func TestAgentPodSpecSecretMountDirUsesFilePath(t *testing.T) {
-  94:func TestRuntimeLabelsIncludeExtractionFields(t *testing.T) {
-  104:func TestRuntimeLabelsSanitizeValues(t *testing.T) {
-  118:func containsAny(s, chars string) bool {
-  127:func TestAgentPodSpecIncludesIntegrationEnv(t *testing.T) {
-  145:func TestBuildWorkspacePVC(t *testing.T) {
-  164:func TestBuildRuntimePod(t *testing.T) {
-
-### internal/sandbox/podspec.go
+## internal/sandbox/podspec.go
+  1:package sandbox
   5:type AgentPodRequest struct {
   30:type SecretKeyRef struct {
   36:type AgentPodSpec struct {
@@ -815,11 +607,8 @@
   80:type VolumeMount struct {
   86:func BuildAgentPodSpec(req AgentPodRequest) AgentPodSpec {
 
-### internal/sandbox/provider_test.go
-  5:func TestKataProviderBuildsAgentPodFromRuntimeImageCatalog(t *testing.T) {
-  36:func TestKataProviderRejectsUnknownRuntime(t *testing.T) {
-
-### internal/sandbox/provider.go
+## internal/sandbox/provider.go
+  1:package sandbox
   5:type Provider interface {
   9:type AgentRequest struct {
   21:type KataProviderConfig struct {
@@ -827,23 +616,16 @@
   31:func NewKataProvider(cfg KataProviderConfig) *KataProvider {
   39:func (p *KataProvider) BuildAgentPod(req AgentRequest) (AgentPodSpec, error) {
 
-### internal/sandbox/secrets_test.go
-  5:func TestKubernetesSecretStoreBuildsSecretRef(t *testing.T) {
-  19:func TestKubernetesSecretStoreValidatesInputs(t *testing.T) {
-
-### internal/sandbox/secrets.go
+## internal/sandbox/secrets.go
+  1:package sandbox
   11:type SecretRef struct {
   20:type RuntimeSecretStore interface {
   25:type KubernetesSecretStore struct {
   29:func (s KubernetesSecretStore) BuildRuntimeTokenSecret(agentID, token string) (SecretRef, *corev1.Secret, error) {
   58:func (s KubernetesSecretStore) DeleteRuntimeTokenName(agentID string) string {
 
-### internal/security/audit_test.go
-  5:func TestScannerApprovesBenignContent(t *testing.T) {
-  16:func TestScannerRejectsSecretExfiltration(t *testing.T) {
-  30:func TestContentDigestStable(t *testing.T) {
-
-### internal/security/audit.go
+## internal/security/audit.go
+  1:package security
   9:type RiskLevel string
   11:const (
   19:type Decision string
@@ -860,12 +642,8 @@
   93:func maxRisk(findings []Finding) RiskLevel {
   103:func riskRank(risk RiskLevel) int {
 
-### internal/security/policy_test.go
-  5:func TestPolicyEnforceRejectsHighRisk(t *testing.T) {
-  12:func TestPolicyWarnAllowsWithWarnings(t *testing.T) {
-  19:func TestPolicyEnforceApprovesLowRiskWithWarnings(t *testing.T) {
-
-### internal/security/policy.go
+## internal/security/policy.go
+  1:package security
   3:type PolicyMode string
   5:const (
   11:type Policy struct {
@@ -873,15 +651,13 @@
   20:func EvaluatePolicy(policy Policy, result ScanResult) Decision {
   41:func DecisionAllowsUse(decision Decision) bool {
 
-### internal/store/factory_test.go
-  5:func TestOpenRejectsPostgresWithoutDSN(t *testing.T) {
-  12:func TestOpenCreatesMemoryStoreByDefault(t *testing.T) {
-
-### internal/store/factory.go
+## internal/store/factory.go
+  1:package store
   8:type Config struct {
   13:func Open(cfg Config) (Store, error) {
 
-### internal/store/postgres.go
+## internal/store/postgres.go
+  1:package store
   17:type Postgres struct{ db *sql.DB }
   19:func NewPostgres(dsn string) (*Postgres, error) {
   37:func runMigrations(ctx context.Context, db *sql.DB) error {
@@ -916,55 +692,84 @@
   571:func (p *Postgres) GetPluginManifest(ctx context.Context, id string) (domain.PluginManifest, error) {
   585:func (p *Postgres) UpsertPluginManifest(ctx context.Context, m domain.PluginManifest) (domain.PluginManifest, error) {
   602:func (p *Postgres) DeletePluginManifest(ctx context.Context, id string) error {
-  615:func (p *Postgres) BootstrapAdmin(ctx context.Context, username, passwordHash string) error {
+  615:func (p *Postgres) GetUserIDByIdentity(ctx context.Context, providerName, subject string) (string, bool, error) {
+  630:func (p *Postgres) TouchIdentityLogin(ctx context.Context, providerName, subject string) error {
+  644:func (p *Postgres) CreateUserAndIdentity(ctx context.Context, args CreateUserAndIdentityArgs) (domain.User, error) {
+  689:func (p *Postgres) LinkIdentityToUser(ctx context.Context, userID, providerName, subject, email, displayName string) error {
+  713:func (p *Postgres) ListUserIdentities(ctx context.Context, userID string) ([]domain.UserIdentity, error) {
+  742:func (p *Postgres) UnlinkIdentity(ctx context.Context, userID, providerName, subject string) error {
+  758:func (p *Postgres) GetAppSetting(ctx context.Context, key string) (string, error) {
+  770:func (p *Postgres) SetAppSetting(ctx context.Context, key, value string) error {
+  782:func (p *Postgres) ListAppSettings(ctx context.Context, prefix string) (map[string]string, error) {
+  807:func (p *Postgres) BootstrapAdmin(ctx context.Context, username, passwordHash string) error {
 
-### internal/store/store_test.go
-  11:func TestMemoryStore_IntegrationConnection(t *testing.T) {
-  77:func TestMemoryStore_AgentIntegration(t *testing.T) {
-  136:func TestMemoryStore_PluginManifestCRUD(t *testing.T) {
-  237:func TestMemoryStore_IntegrationConnection_UpsertRevisionAutoIncrement(t *testing.T) {
+## internal/store/store.go
+  1:package store
+  16:type Store interface {
+  77:type CreateUserAndIdentityArgs struct {
+  86:var ErrNotFound = errors.New("not found")
+  87:var ErrForbidden = errors.New("forbidden")
+  88:var ErrConflict = errors.New("conflict")
+  89:var ErrInvalidInput = errors.New("invalid input")
+  91:type Memory struct {
+  111:func NewMemory() *Memory {
+  121:func (m *Memory) CreateUser(ctx context.Context, username, passwordHash, role string) (domain.User, error) {
+  145:func (m *Memory) GetUser(ctx context.Context, userID string) (domain.User, error) {
+  159:func (m *Memory) GetUserByUsername(ctx context.Context, username string) (domain.User, error) {
+  173:func (m *Memory) ListUsers(ctx context.Context) ([]domain.User, error) {
+  184:func (m *Memory) UpdateUser(ctx context.Context, userID string, disabled *bool, role *string) (domain.User, error) {
+  206:func (m *Memory) GetPasswordHash(_ context.Context, username string) (string, error) {
+  217:func (m *Memory) SetPasswordHash(_ context.Context, username, hash string) error {
+  226:func (m *Memory) CreateAgent(ctx context.Context, ownerUserID, name, description, runtime, model, systemPrompt string) (domain.Agent, error) {
+  253:func (m *Memory) GetAgent(ctx context.Context, agentID string) (domain.Agent, error) {
+  267:func (m *Memory) ListAgents(ctx context.Context, ownerUserID string) ([]domain.Agent, error) {
+  282:func (m *Memory) UpdateAgentState(ctx context.Context, agentID, state string) (domain.Agent, error) {
+  298:func (m *Memory) UpdateAgentError(ctx context.Context, agentID, lastError string) (domain.Agent, error) {
+  314:func (m *Memory) DeleteAgent(ctx context.Context, agentID string) error {
+  338:func (m *Memory) CreateLLMModel(ctx context.Context, displayName, providerModel string, enabled bool) (domain.LLMModel, error) {
+  361:func (m *Memory) GetLLMModel(ctx context.Context, modelID string) (domain.LLMModel, error) {
+  375:func (m *Memory) ListLLMModels(ctx context.Context) ([]domain.LLMModel, error) {
+  386:func (m *Memory) UpdateLLMModel(ctx context.Context, modelID string, displayName, providerModel *string, enabled *bool) (domain.LLMModel, error) {
+  412:func (m *Memory) GetLLMGatewaySettings(ctx context.Context) (domain.LLMGatewaySettings, error) {
+  427:func (m *Memory) UpsertLLMGatewaySettings(ctx context.Context, enabled bool, baseURL, secretName, secretKey string) (domain.LLMGatewaySettings, error) {
+  450:func (m *Memory) UpsertIntegrationConnection(ctx context.Context, connection domain.IntegrationConnection) (domain.IntegrationConnection, error) {
+  495:func (m *Memory) GetIntegrationConnection(ctx context.Context, userID, providerID string) (domain.IntegrationConnection, error) {
+  509:func (m *Memory) ListUserIntegrationProviderIDs(ctx context.Context, userID string) ([]string, error) {
+  528:func (m *Memory) DeleteIntegrationConnection(ctx context.Context, userID, providerID string) error {
+  553:func (m *Memory) UpsertAgentIntegration(ctx context.Context, agentID, providerID string, enabled bool, revision int64, status string) (domain.AgentIntegration, error) {
+  591:func (m *Memory) ListAgentIntegrations(ctx context.Context, agentID string) ([]domain.AgentIntegration, error) {
+  609:func (m *Memory) GetAgentIntegration(ctx context.Context, agentID, providerID string) (domain.AgentIntegration, error) {
+  625:func (m *Memory) ListPluginManifests(ctx context.Context, enabledOnly bool) ([]domain.PluginManifest, error) {
+  641:func (m *Memory) GetPluginManifest(ctx context.Context, id string) (domain.PluginManifest, error) {
+  654:func (m *Memory) UpsertPluginManifest(ctx context.Context, manifest domain.PluginManifest) (domain.PluginManifest, error) {
+  677:func (m *Memory) DeletePluginManifest(ctx context.Context, id string) error {
+  692:func (m *Memory) BootstrapAdmin(ctx context.Context, username, passwordHash string) error {
+  730:func newID() (string, error) {
+  740:func (m *Memory) GetUserIDByIdentity(ctx context.Context, providerName, subject string) (string, bool, error) {
+  754:func (m *Memory) TouchIdentityLogin(ctx context.Context, providerName, subject string) error {
+  770:func (m *Memory) CreateUserAndIdentity(ctx context.Context, args CreateUserAndIdentityArgs) (domain.User, error) {
+  806:func (m *Memory) LinkIdentityToUser(ctx context.Context, userID, providerName, subject, email, displayName string) error {
+  841:func (m *Memory) ListUserIdentities(ctx context.Context, userID string) ([]domain.UserIdentity, error) {
+  866:func (m *Memory) UnlinkIdentity(ctx context.Context, userID, providerName, subject string) error {
+  884:func (m *Memory) GetAppSetting(ctx context.Context, key string) (string, error) {
+  893:func (m *Memory) SetAppSetting(ctx context.Context, key, value string) error {
+  903:func (m *Memory) ListAppSettings(ctx context.Context, prefix string) (map[string]string, error) {
 
-### internal/store/store.go
-  14:type Store interface {
-  62:var ErrNotFound = errors.New("not found")
-  63:var ErrForbidden = errors.New("forbidden")
-  64:var ErrConflict = errors.New("conflict")
-  65:var ErrInvalidInput = errors.New("invalid input")
-  67:type Memory struct {
-  84:func NewMemory() *Memory {
-  93:func (m *Memory) CreateUser(ctx context.Context, username, passwordHash, role string) (domain.User, error) {
-  117:func (m *Memory) GetUser(ctx context.Context, userID string) (domain.User, error) {
-  131:func (m *Memory) GetUserByUsername(ctx context.Context, username string) (domain.User, error) {
-  145:func (m *Memory) ListUsers(ctx context.Context) ([]domain.User, error) {
-  156:func (m *Memory) UpdateUser(ctx context.Context, userID string, disabled *bool, role *string) (domain.User, error) {
-  178:func (m *Memory) GetPasswordHash(_ context.Context, username string) (string, error) {
-  189:func (m *Memory) SetPasswordHash(_ context.Context, username, hash string) error {
-  198:func (m *Memory) CreateAgent(ctx context.Context, ownerUserID, name, description, runtime, model, systemPrompt string) (domain.Agent, error) {
-  225:func (m *Memory) GetAgent(ctx context.Context, agentID string) (domain.Agent, error) {
-  239:func (m *Memory) ListAgents(ctx context.Context, ownerUserID string) ([]domain.Agent, error) {
-  254:func (m *Memory) UpdateAgentState(ctx context.Context, agentID, state string) (domain.Agent, error) {
-  270:func (m *Memory) UpdateAgentError(ctx context.Context, agentID, lastError string) (domain.Agent, error) {
-  286:func (m *Memory) DeleteAgent(ctx context.Context, agentID string) error {
-  310:func (m *Memory) CreateLLMModel(ctx context.Context, displayName, providerModel string, enabled bool) (domain.LLMModel, error) {
-  333:func (m *Memory) GetLLMModel(ctx context.Context, modelID string) (domain.LLMModel, error) {
-  347:func (m *Memory) ListLLMModels(ctx context.Context) ([]domain.LLMModel, error) {
-  358:func (m *Memory) UpdateLLMModel(ctx context.Context, modelID string, displayName, providerModel *string, enabled *bool) (domain.LLMModel, error) {
-  384:func (m *Memory) GetLLMGatewaySettings(ctx context.Context) (domain.LLMGatewaySettings, error) {
-  399:func (m *Memory) UpsertLLMGatewaySettings(ctx context.Context, enabled bool, baseURL, secretName, secretKey string) (domain.LLMGatewaySettings, error) {
-  422:func (m *Memory) UpsertIntegrationConnection(ctx context.Context, connection domain.IntegrationConnection) (domain.IntegrationConnection, error) {
-  467:func (m *Memory) GetIntegrationConnection(ctx context.Context, userID, providerID string) (domain.IntegrationConnection, error) {
-  481:func (m *Memory) ListUserIntegrationProviderIDs(ctx context.Context, userID string) ([]string, error) {
-  500:func (m *Memory) DeleteIntegrationConnection(ctx context.Context, userID, providerID string) error {
-  525:func (m *Memory) UpsertAgentIntegration(ctx context.Context, agentID, providerID string, enabled bool, revision int64, status string) (domain.AgentIntegration, error) {
-  563:func (m *Memory) ListAgentIntegrations(ctx context.Context, agentID string) ([]domain.AgentIntegration, error) {
-  581:func (m *Memory) GetAgentIntegration(ctx context.Context, agentID, providerID string) (domain.AgentIntegration, error) {
-  597:func (m *Memory) ListPluginManifests(ctx context.Context, enabledOnly bool) ([]domain.PluginManifest, error) {
-  613:func (m *Memory) GetPluginManifest(ctx context.Context, id string) (domain.PluginManifest, error) {
-  626:func (m *Memory) UpsertPluginManifest(ctx context.Context, manifest domain.PluginManifest) (domain.PluginManifest, error) {
-  649:func (m *Memory) DeletePluginManifest(ctx context.Context, id string) error {
-  664:func (m *Memory) BootstrapAdmin(ctx context.Context, username, passwordHash string) error {
-  702:func newID() (string, error) {
+## migrations/0001_platform.sql
 
-### migrations/migrate.go
+## migrations/0002_integrations.sql
+
+## migrations/0003_agent_description_prompt.sql
+
+## migrations/0004_plugin_manifests.sql
+
+## migrations/0005_integration_scope.sql
+
+## migrations/0006_app_settings.sql
+
+## migrations/0007_user_identities.sql
+
+## migrations/migrate.go
+  1:package migrations
   6:var FS embed.FS
 

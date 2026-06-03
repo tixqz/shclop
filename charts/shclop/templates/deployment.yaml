@@ -10,6 +10,10 @@
 {{- fail "postgresql.bundled must be true or postgresql.existingSecret.name must be set" -}}
 {{- end -}}
 
+{{- if and .Values.auth.idp.providers (not .Values.auth.cookieKey.existingSecret.name) -}}
+{{- fail "auth.cookieKey.existingSecret.name is required when auth.idp.providers is non-empty" -}}
+{{- end -}}
+
 {{- $fullname := include "shclop.fullname" . -}}
 {{- $runtimeGatewayURL := .Values.sandbox.kubernetes.gatewayURL | default (printf "ws://%s-backend:8080/runtime/ws" $fullname) -}}
 {{- $litellmNamespace := .Values.llmGateway.litellm.namespace | default .Release.Namespace -}}
@@ -124,6 +128,46 @@ spec:
               value: {{ .Values.agentRuntime.images.nanoclaw | quote }}
             - name: SHCLOP_PLUGIN_DIR
               value: /etc/shclop/plugins.d
+            {{- range $i, $p := .Values.auth.idp.providers }}
+            - name: SHCLOP_IDP_PROVIDER_{{ $i }}_NAME
+              value: {{ $p.name | quote }}
+            - name: SHCLOP_IDP_PROVIDER_{{ $i }}_DISPLAY_NAME
+              value: {{ $p.displayName | default (printf "Sign in with %s" $p.name) | quote }}
+            - name: SHCLOP_IDP_PROVIDER_{{ $i }}_ISSUER
+              value: {{ $p.issuer | quote }}
+            - name: SHCLOP_IDP_PROVIDER_{{ $i }}_CLIENT_ID
+              value: {{ $p.clientID | quote }}
+            - name: SHCLOP_IDP_PROVIDER_{{ $i }}_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required (printf "auth.idp.providers[%d].clientSecret.existingSecret.name is required" $i) $p.clientSecret.existingSecret.name | quote }}
+                  key: {{ $p.clientSecret.existingSecret.key | quote }}
+            - name: SHCLOP_IDP_PROVIDER_{{ $i }}_REDIRECT_URI
+              value: {{ $p.redirectURI | quote }}
+            {{- if $p.scopes }}
+            - name: SHCLOP_IDP_PROVIDER_{{ $i }}_SCOPES
+              value: {{ join "," $p.scopes | quote }}
+            {{- end }}
+            {{- if and $p.claims $p.claims.email }}
+            - name: SHCLOP_IDP_PROVIDER_{{ $i }}_EMAIL_CLAIM
+              value: {{ $p.claims.email | quote }}
+            {{- end }}
+            {{- if and $p.claims $p.claims.name }}
+            - name: SHCLOP_IDP_PROVIDER_{{ $i }}_NAME_CLAIM
+              value: {{ $p.claims.name | quote }}
+            {{- end }}
+            {{- if and $p.claims $p.claims.groups }}
+            - name: SHCLOP_IDP_PROVIDER_{{ $i }}_GROUPS_CLAIM
+              value: {{ $p.claims.groups | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if and .Values.auth.idp.providers .Values.auth.cookieKey.existingSecret.name }}
+            - name: SHCLOP_AUTH_COOKIE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.cookieKey.existingSecret.name | quote }}
+                  key: {{ .Values.auth.cookieKey.existingSecret.key | quote }}
+            {{- end }}
           volumeMounts:
             - name: plugin-manifests
               mountPath: /etc/shclop/plugins.d

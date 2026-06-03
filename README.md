@@ -206,6 +206,61 @@ Shclop does not include an LLM proxy. The backend stores:
 
 When a user creates or starts an agent, the backend validates that the selected model is enabled. When the Kubernetes runtime pod is created, Shclop passes the base URL, model, and API key SecretKeyRef to the pod. The gateway itself is operated outside Shclop.
 
+## OIDC SSO (optional)
+
+Shclop supports OpenID Connect single sign-on as an alternative or supplement to local password login. Configure one or more identity providers (Keycloak, Auth0, Okta, Google Workspace, Azure AD, etc.) via Helm values.
+
+### Prerequisites
+
+1. The IdP must have an OAuth2 client registered with redirect URI `https://<your-shclop-host>/api/auth/oidc/<provider-name>/callback`.
+2. A Kubernetes Secret containing the OIDC client secret.
+3. A 32-byte random key (base64-encoded) stored in a Kubernetes Secret, used to encrypt the OIDC state cookie.
+
+Generate the cookie key:
+
+```bash
+openssl rand -base64 32 | kubectl create secret generic shclop-auth-cookie --from-literal=cookie-key=-
+```
+
+(Adjust to your namespace.)
+
+### Helm values
+
+```yaml
+auth:
+  mode: both    # local | sso | both
+  cookieKey:
+    existingSecret:
+      name: shclop-auth-cookie
+      key: cookie-key
+  idp:
+    providers:
+      - name: keycloak
+        displayName: "Sign in with Keycloak"
+        issuer: https://keycloak.example.com/realms/main
+        clientID: shclop
+        clientSecret:
+          existingSecret:
+            name: shclop-keycloak
+            key: client-secret
+        redirectURI: https://shclop.example.com/api/auth/oidc/keycloak/callback
+        scopes: [openid, email, profile, groups]
+```
+
+After `helm upgrade --install`, the login screen shows a "Sign in with Keycloak" button. First successful sign-in JIT-creates a local user with role `user`. The admin can promote via the Users panel.
+
+### Modes
+
+- `local` — only local username+password login. SSO buttons hidden.
+- `sso` — only SSO. Local login disabled except for the bootstrap admin (`SHCLOP_BOOTSTRAP_ADMIN_USERNAME`), accessible via `?break_glass=1` on the login URL.
+- `both` — both paths active. SSO users JIT-provisioned, local users still log in with password.
+
+The admin can switch modes at runtime via the Admin → Auth tab. The initial seed value comes from `auth.mode` in Helm values; subsequent changes are stored in the database.
+
+### Account linking
+
+If an IdP returns an email that matches an existing local user, the SSO flow returns `409 local_user_with_same_email_exists`. The admin must explicitly link the identity via the Admin → Users → Identities panel before the user can sign in via that IdP. This protects against IdP-side email-spoofing capturing existing local accounts.
+
 ## Health, readiness, metrics, and logs
 
 Endpoints:

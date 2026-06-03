@@ -75,6 +75,29 @@ func (s *Service) Resolve(token string) (domain.User, bool) {
 	return user, ok
 }
 
+// IssueToken creates a session token for the given user without password validation.
+func (s *Service) IssueToken(user domain.User) (string, error) {
+	token, err := tokenID()
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.tokens[token] = user
+	s.mu.Unlock()
+	return token, nil
+}
+
+// Revoke removes a session token. Returns false if the token was not found.
+func (s *Service) Revoke(token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.tokens[token]
+	if ok {
+		delete(s.tokens, token)
+	}
+	return ok
+}
+
 func tokenID() (string, error) {
 	var b [24]byte
 	if _, err := rand.Read(b[:]); err != nil {

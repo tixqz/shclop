@@ -10,7 +10,10 @@ import (
 )
 
 func main() {
-	cfg := config.Default()
+	cfg, err := config.Default()
+	if err != nil {
+		log.Fatal(err)
+	}
 	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "HTTP listen address")
 	flag.BoolVar(&cfg.Dev, "dev", cfg.Dev, "enable dev mode")
 	flag.BoolVar(&cfg.MockRuntime, "mock-runtime", cfg.MockRuntime, "enable mock runtime provider")

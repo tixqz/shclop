@@ -140,6 +140,45 @@ bootstrapAdmin:
   # -- Admin password (used when existingSecret.name is empty; auto-generated if both empty)
   password: ""
 
+auth:
+  # -- Initial auth mode seeded into the database on first migration.
+  # -- Admin can change this at runtime via /api/admin/auth-settings.
+  # -- Allowed: local | sso | both
+  mode: local
+
+  # -- Symmetric key used to encrypt the OIDC state cookie between /login and /callback.
+  # -- Required when at least one IdP provider is configured.
+  cookieKey:
+    # -- Reference an existing Secret containing the key. The key must be 32 raw bytes
+    # -- (base64-encoded in the Secret value).
+    existingSecret:
+      name: ""
+      key: cookie-key
+
+  # -- OpenID Connect identity providers. Each entry materializes one Sign-in button
+  # -- on the login screen.
+  idp:
+    providers: []
+    # Example entry:
+    # - name: keycloak
+    #   displayName: "Sign in with Keycloak"
+    #   issuer: https://keycloak.example.com/realms/main
+    #   clientID: shclop
+    #   clientSecret:
+    #     existingSecret:
+    #       name: shclop-keycloak
+    #       key: client-secret
+    #   redirectURI: https://shclop.example.com/api/auth/oidc/keycloak/callback
+    #   scopes:
+    #     - openid
+    #     - email
+    #     - profile
+    #     - groups
+    #   claims:
+    #     email: email
+    #     name: name
+    #     groups: groups
+
 observability:
   # -- Default retention period in days for logs and metrics
   retentionDays: 7
