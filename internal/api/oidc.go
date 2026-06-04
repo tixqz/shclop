@@ -21,10 +21,6 @@ import (
 const oidcStateCookieName = "shclop_oidc_state"
 
 func (s *Server) handleListAuthProviders(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
 	providers := s.idpRegistry.List()
 	summaries := make([]domain.IdPProviderSummary, 0, len(providers))
 	for _, p := range providers {
@@ -296,11 +292,6 @@ func (s *Server) linkOrCreateUser(ctx context.Context, providerName, subject, em
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
-
 	token := ""
 	if cookie, err := r.Cookie("shclop_session"); err == nil {
 		token = strings.TrimSpace(cookie.Value)
@@ -325,17 +316,6 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	})
 
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func (s *Server) handleAuthSettings(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.handleGetAuthSettings(w, r)
-	case http.MethodPatch:
-		s.handlePatchAuthSettings(w, r)
-	default:
-		methodNotAllowed(w, "GET, PATCH")
-	}
 }
 
 func (s *Server) handleGetAuthSettings(w http.ResponseWriter, r *http.Request) {
@@ -425,7 +405,8 @@ func (s *Server) handlePatchAuthSettings(w http.ResponseWriter, r *http.Request)
 	s.handleGetAuthSettings(w, r)
 }
 
-func (s *Server) handleAdminListIdentities(w http.ResponseWriter, r *http.Request, userID string) {
+func (s *Server) handleAdminListIdentities(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
 	caller, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -447,7 +428,8 @@ func (s *Server) handleAdminListIdentities(w http.ResponseWriter, r *http.Reques
 	s.writeJSON(w, http.StatusOK, map[string]any{"identities": toIdentityJSON(identities)})
 }
 
-func (s *Server) handleAdminLinkIdentity(w http.ResponseWriter, r *http.Request, userID string) {
+func (s *Server) handleAdminLinkIdentity(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
 	caller, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -493,19 +475,16 @@ func (s *Server) handleAdminLinkIdentity(w http.ResponseWriter, r *http.Request,
 	s.writeJSON(w, http.StatusCreated, map[string]any{"identities": toIdentityJSON(identities)})
 }
 
-func (s *Server) handleAdminUnlinkIdentity(w http.ResponseWriter, r *http.Request, userID, providerName, subject string) {
+func (s *Server) handleAdminUnlinkIdentity(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+	providerName := r.PathValue("provider")
+	subject := r.PathValue("subject")
 	caller, ok := s.requireUser(w, r)
 	if !ok {
 		return
 	}
 	if caller.Role != "admin" {
 		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	subject, err := url.PathUnescape(subject)
-	if err != nil {
-		http.Error(w, "bad request: invalid subject encoding", http.StatusBadRequest)
 		return
 	}
 

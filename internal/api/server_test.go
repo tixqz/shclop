@@ -643,27 +643,37 @@ func TestAgentsRequireAuth(t *testing.T) {
 func TestWrongMethods(t *testing.T) {
 	server := newTestServer()
 
+	// Go 1.22+ ServeMux automatically returns 405 with an Allow header when a
+	// method-specific pattern is registered and a different method is used.
+	// Note: ServeMux always adds HEAD alongside GET in the Allow header.
+	// Paths that have no method-specific handler but are caught by the "/" catch-all
+	// return 404 (handleFrontend returns 404 for all /api/ paths).
 	for _, test := range []struct {
 		name   string
 		method string
 		path   string
+		status int
 		allow  string
 	}{
-		{name: "healthz post", method: http.MethodPost, path: "/healthz", allow: http.MethodGet},
-		{name: "login get", method: http.MethodGet, path: "/api/auth/login", allow: http.MethodPost},
-		{name: "me post", method: http.MethodPost, path: "/api/me", allow: http.MethodGet},
-		{name: "agents put", method: http.MethodPut, path: "/api/agents", allow: "GET, POST"},
-		{name: "ws post", method: http.MethodPost, path: "/ws", allow: http.MethodGet},
+		{name: "healthz post", method: http.MethodPost, path: "/healthz", status: http.StatusMethodNotAllowed, allow: "GET, HEAD"},
+		{name: "login get", method: http.MethodGet, path: "/api/auth/login", status: http.StatusNotFound, allow: ""},
+		{name: "me post", method: http.MethodPost, path: "/api/me", status: http.StatusMethodNotAllowed, allow: "GET, HEAD"},
+		// PUT /api/agents has no registered pattern; the "/" catch-all (handleFrontend)
+		// handles it and returns 405 with "GET, HEAD" since frontend only allows GET/HEAD.
+		{name: "agents put", method: http.MethodPut, path: "/api/agents", status: http.StatusMethodNotAllowed, allow: "GET, HEAD"},
+		{name: "ws post", method: http.MethodPost, path: "/ws", status: http.StatusMethodNotAllowed, allow: "GET, HEAD"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(test.method, test.path, nil)
 			response := httptest.NewRecorder()
 			server.Handler().ServeHTTP(response, request)
-			if response.Code != http.StatusMethodNotAllowed {
-				t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, response.Code)
+			if response.Code != test.status {
+				t.Fatalf("expected status %d, got %d", test.status, response.Code)
 			}
-			if got := response.Header().Get("Allow"); got != test.allow {
-				t.Fatalf("expected Allow header %q, got %q", test.allow, got)
+			if test.allow != "" {
+				if got := response.Header().Get("Allow"); got != test.allow {
+					t.Fatalf("expected Allow header %q, got %q", test.allow, got)
+				}
 			}
 		})
 	}

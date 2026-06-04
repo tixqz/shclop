@@ -465,49 +465,78 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
 	// Health / readiness / metrics
-	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/readyz", s.handleReady)
-	mux.Handle("/metrics", s.handleMetrics())
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReady)
+	mux.Handle("GET /metrics", s.handleMetrics())
 
 	// Auth
-	mux.HandleFunc("/api/auth/login", s.handleLogin)
-	mux.HandleFunc("/api/auth/providers", s.handleListAuthProviders)
-	mux.HandleFunc("/api/auth/logout", s.handleLogout)
-	mux.HandleFunc("/api/auth/oidc/", s.handleOIDCRoute)
+	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("GET /api/auth/providers", s.handleListAuthProviders)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("/api/auth/oidc/", s.handleOIDCRoute) // prefix, multiple methods inside
 
 	// Current user
-	mux.HandleFunc("/api/me", s.handleMe)
+	mux.HandleFunc("GET /api/me", s.handleMe)
 
 	// Agents
-	mux.HandleFunc("/api/agents", s.handleAgents)
-	mux.HandleFunc("/api/agents/", s.handleAgent)
+	mux.HandleFunc("GET /api/agents", s.handleListAgents)
+	mux.HandleFunc("POST /api/agents", s.handleCreateAgent)
+	mux.HandleFunc("GET /api/agents/{id}", s.handleGetAgent)
+	mux.HandleFunc("DELETE /api/agents/{id}", s.handleDeleteAgent)
+	mux.HandleFunc("POST /api/agents/{id}/start", s.handleStartAgent)
+	mux.HandleFunc("POST /api/agents/{id}/stop", s.handleStopAgent)
+	mux.HandleFunc("PUT /api/agents/{id}/integrations/{providerID}", s.handleAgentIntegration)
 
 	// Integrations
-	mux.HandleFunc("/api/integrations", s.handleIntegrations)
-	mux.HandleFunc("/api/integrations/", s.handleIntegration)
+	mux.HandleFunc("GET /api/integrations", s.handleListIntegrations)
+	mux.HandleFunc("PUT /api/integrations/{providerID}/connection", s.handleConnectIntegration)
+	mux.HandleFunc("DELETE /api/integrations/{providerID}/connection", s.handleDisconnectIntegration)
 
 	// Public models (enabled only for any authenticated user)
-	mux.HandleFunc("/api/models", s.handleModels)
+	mux.HandleFunc("GET /api/models", s.handleListEnabledModels)
 
-	// Admin
-	mux.HandleFunc("/api/admin/users", s.handleAdminUsers)
-	mux.HandleFunc("/api/admin/users/", s.handleAdminUser)
-	mux.HandleFunc("/api/admin/models", s.handleAdminModels)
-	mux.HandleFunc("/api/admin/models/", s.handleAdminModel)
-	mux.HandleFunc("/api/admin/llm-gateway", s.handleAdminLLMGateway)
-	mux.HandleFunc("/api/admin/overview", s.handleAdminOverview)
-	mux.HandleFunc("/api/admin/auth-settings", s.handleAuthSettings)
-	mux.HandleFunc("/api/admin/plugins", s.handleAdminPlugins)
-	mux.HandleFunc("/api/admin/plugins/", s.handleAdminPlugin)
+	// Admin users
+	mux.HandleFunc("GET /api/admin/users", s.handleAdminListUsers)
+	mux.HandleFunc("POST /api/admin/users", s.handleAdminCreateUser)
+	mux.HandleFunc("PATCH /api/admin/users/{id}", s.handleAdminUpdateUser)
+	mux.HandleFunc("GET /api/admin/users/{id}/identities", s.handleAdminListIdentities)
+	mux.HandleFunc("POST /api/admin/users/{id}/identities", s.handleAdminLinkIdentity)
+	mux.HandleFunc("DELETE /api/admin/users/{id}/identities/{provider}/{subject}", s.handleAdminUnlinkIdentity)
+
+	// Admin models
+	mux.HandleFunc("GET /api/admin/models", s.handleAdminListModels)
+	mux.HandleFunc("POST /api/admin/models", s.handleAdminCreateModel)
+	mux.HandleFunc("PATCH /api/admin/models/{id}", s.handleAdminUpdateModel)
+
+	// Admin LLM gateway
+	mux.HandleFunc("GET /api/admin/llm-gateway", s.handleAdminGetLLMGateway)
+	mux.HandleFunc("PATCH /api/admin/llm-gateway", s.handleAdminUpdateLLMGateway)
+
+	// Admin overview
+	mux.HandleFunc("GET /api/admin/overview", s.handleAdminOverview)
+
+	// Admin auth settings
+	mux.HandleFunc("GET /api/admin/auth-settings", s.handleGetAuthSettings)
+	mux.HandleFunc("PATCH /api/admin/auth-settings", s.handlePatchAuthSettings)
+
+	// Admin plugins
+	mux.HandleFunc("GET /api/admin/plugins", s.handleAdminListPlugins)
+	mux.HandleFunc("POST /api/admin/plugins", func(w http.ResponseWriter, r *http.Request) {
+		s.handleAdminUpsertPlugin(w, r, "")
+	})
+	mux.HandleFunc("PUT /api/admin/plugins/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s.handleAdminUpsertPlugin(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("DELETE /api/admin/plugins/{id}", s.handleAdminDeletePlugin)
 
 	// Activity
-	mux.HandleFunc("/api/activity", s.handleActivity)
+	mux.HandleFunc("GET /api/activity", s.handleActivity)
 
 	// WebSocket
-	mux.HandleFunc("/ws", s.handleWebSocket)
-	mux.HandleFunc("/runtime/ws", s.handleRuntimeWebSocket)
+	mux.HandleFunc("GET /ws", s.handleWebSocket)
+	mux.HandleFunc("GET /runtime/ws", s.handleRuntimeWebSocket)
 
-	// Frontend
+	// Frontend (catch-all SPA fallback)
 	mux.HandleFunc("/", s.handleFrontend)
 	return mux
 }
@@ -515,18 +544,10 @@ func (s *Server) routes() http.Handler {
 // --- Health / Readiness / Metrics ---
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
 	// Simple readiness check: can we access the store?
 	_, err := s.store.ListUsers(r.Context())
 	if err != nil {
@@ -548,10 +569,6 @@ func (s *Server) handleMetrics() http.Handler {
 // --- Auth ---
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	s.bootstrapAdmin()
 
 	if s.idpRegistry.Mode() == domain.AuthModeSSO {
@@ -592,10 +609,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // --- Current User ---
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -604,54 +617,6 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Agents ---
-
-func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		s.handleCreateAgent(w, r)
-	case http.MethodGet:
-		s.handleListAgents(w, r)
-	default:
-		methodNotAllowed(w, "GET, POST")
-	}
-}
-
-func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/agents/")
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) >= 3 && parts[1] == "integrations" {
-		s.handleAgentIntegration(w, r, parts[0], parts[2])
-		return
-	}
-	if len(parts) == 2 && parts[1] == "start" {
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w, http.MethodPost)
-			return
-		}
-		s.handleStartAgent(w, r, parts[0])
-		return
-	}
-	if len(parts) == 2 && parts[1] == "stop" {
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w, http.MethodPost)
-			return
-		}
-		s.handleStopAgent(w, r, parts[0])
-		return
-	}
-	if len(parts) == 1 && parts[0] != "" {
-		switch r.Method {
-		case http.MethodGet:
-			s.handleGetAgent(w, r, parts[0])
-		case http.MethodDelete:
-			s.handleDeleteAgent(w, r, parts[0])
-		default:
-			methodNotAllowed(w, "GET, DELETE")
-		}
-		return
-	}
-	http.NotFound(w, r)
-}
 
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
@@ -730,7 +695,8 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, agents)
 }
 
-func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -752,7 +718,8 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request, agentID 
 	s.writeJSON(w, http.StatusOK, agent)
 }
 
-func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -898,7 +865,8 @@ func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request, agentI
 	s.writeJSON(w, http.StatusAccepted, agent)
 }
 
-func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -936,7 +904,8 @@ func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request, agentID
 	s.writeJSON(w, http.StatusOK, agent)
 }
 
-func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request, agentID string) {
+func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -970,39 +939,6 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request, agent
 
 // --- Integrations ---
 
-func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
-	s.handleListIntegrations(w, r)
-}
-
-func (s *Server) handleIntegration(w http.ResponseWriter, r *http.Request) {
-	// Path: /api/integrations/{provider}/...
-	path := strings.TrimPrefix(r.URL.Path, "/api/integrations/")
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 1 || parts[0] == "" {
-		http.NotFound(w, r)
-		return
-	}
-	providerID := parts[0]
-
-	if len(parts) >= 2 && parts[1] == "connection" {
-		switch r.Method {
-		case http.MethodPut:
-			s.handleConnectIntegration(w, r, providerID)
-		case http.MethodDelete:
-			s.handleDisconnectIntegration(w, r, providerID)
-		default:
-			methodNotAllowed(w, "PUT, DELETE")
-		}
-		return
-	}
-
-	http.NotFound(w, r)
-}
-
 func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
 	if !ok {
@@ -1017,7 +953,8 @@ func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) 
 	s.writeJSON(w, http.StatusOK, summary)
 }
 
-func (s *Server) handleConnectIntegration(w http.ResponseWriter, r *http.Request, providerID string) {
+func (s *Server) handleConnectIntegration(w http.ResponseWriter, r *http.Request) {
+	providerID := r.PathValue("providerID")
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -1067,7 +1004,8 @@ func (s *Server) handleConnectIntegration(w http.ResponseWriter, r *http.Request
 	})
 }
 
-func (s *Server) handleDisconnectIntegration(w http.ResponseWriter, r *http.Request, providerID string) {
+func (s *Server) handleDisconnectIntegration(w http.ResponseWriter, r *http.Request) {
+	providerID := r.PathValue("providerID")
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -1083,14 +1021,11 @@ func (s *Server) handleDisconnectIntegration(w http.ResponseWriter, r *http.Requ
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "disconnected"})
 }
 
-func (s *Server) handleAgentIntegration(w http.ResponseWriter, r *http.Request, agentID, providerID string) {
+func (s *Server) handleAgentIntegration(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	providerID := r.PathValue("providerID")
 	user, ok := s.requireUser(w, r)
 	if !ok {
-		return
-	}
-
-	if r.Method != http.MethodPut {
-		methodNotAllowed(w, http.MethodPut)
 		return
 	}
 
@@ -1149,17 +1084,6 @@ func (s *Server) handleAgentIntegration(w http.ResponseWriter, r *http.Request, 
 }
 
 // --- Admin Users ---
-
-func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.handleAdminListUsers(w, r)
-	case http.MethodPost:
-		s.handleAdminCreateUser(w, r)
-	default:
-		methodNotAllowed(w, "GET, POST")
-	}
-}
 
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
@@ -1231,40 +1155,8 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, created)
 }
 
-func (s *Server) handleAdminUser(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/admin/users/")
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 1 && parts[0] != "" {
-		if r.Method == http.MethodPatch {
-			s.handleAdminUpdateUser(w, r, parts[0])
-			return
-		}
-		methodNotAllowed(w, http.MethodPatch)
-		return
-	}
-	if len(parts) == 2 && parts[0] != "" && parts[1] == "identities" {
-		switch r.Method {
-		case http.MethodGet:
-			s.handleAdminListIdentities(w, r, parts[0])
-		case http.MethodPost:
-			s.handleAdminLinkIdentity(w, r, parts[0])
-		default:
-			methodNotAllowed(w, "GET, POST")
-		}
-		return
-	}
-	if len(parts) == 4 && parts[0] != "" && parts[1] == "identities" && parts[2] != "" && parts[3] != "" {
-		if r.Method == http.MethodDelete {
-			s.handleAdminUnlinkIdentity(w, r, parts[0], parts[2], parts[3])
-			return
-		}
-		methodNotAllowed(w, http.MethodDelete)
-		return
-	}
-	http.NotFound(w, r)
-}
-
-func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, targetUserID string) {
+func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
+	targetUserID := r.PathValue("id")
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -1302,15 +1194,6 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, t
 }
 
 // --- Public Models (enabled only) ---
-
-func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.handleListEnabledModels(w, r)
-	default:
-		methodNotAllowed(w, "GET")
-	}
-}
 
 func (s *Server) handleListEnabledModels(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
@@ -1413,17 +1296,6 @@ func (s *Server) fetchLiteLLMModels(ctx context.Context, baseURL, apiKey string)
 
 // --- Admin Models ---
 
-func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.handleAdminListModels(w, r)
-	case http.MethodPost:
-		s.handleAdminCreateModel(w, r)
-	default:
-		methodNotAllowed(w, "GET, POST")
-	}
-}
-
 func (s *Server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
 	if !ok {
@@ -1477,21 +1349,8 @@ func (s *Server) handleAdminCreateModel(w http.ResponseWriter, r *http.Request) 
 	s.writeJSON(w, http.StatusCreated, model)
 }
 
-func (s *Server) handleAdminModel(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/admin/models/")
-	modelID := strings.TrimSpace(strings.Trim(path, "/"))
-	if modelID == "" {
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method == http.MethodPatch {
-		s.handleAdminUpdateModel(w, r, modelID)
-		return
-	}
-	methodNotAllowed(w, http.MethodPatch)
-}
-
-func (s *Server) handleAdminUpdateModel(w http.ResponseWriter, r *http.Request, modelID string) {
+func (s *Server) handleAdminUpdateModel(w http.ResponseWriter, r *http.Request) {
+	modelID := r.PathValue("id")
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -1523,17 +1382,6 @@ func (s *Server) handleAdminUpdateModel(w http.ResponseWriter, r *http.Request, 
 }
 
 // --- Admin LLM Gateway ---
-
-func (s *Server) handleAdminLLMGateway(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.handleAdminGetLLMGateway(w, r)
-	case http.MethodPatch:
-		s.handleAdminUpdateLLMGateway(w, r)
-	default:
-		methodNotAllowed(w, "GET, PATCH")
-	}
-}
 
 func (s *Server) handleAdminGetLLMGateway(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
@@ -1581,34 +1429,6 @@ func (s *Server) handleAdminUpdateLLMGateway(w http.ResponseWriter, r *http.Requ
 }
 
 // --- Admin Plugins ---
-
-func (s *Server) handleAdminPlugins(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.handleAdminListPlugins(w, r)
-	case http.MethodPost:
-		s.handleAdminUpsertPlugin(w, r, "")
-	default:
-		methodNotAllowed(w, "GET, POST")
-	}
-}
-
-func (s *Server) handleAdminPlugin(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/admin/plugins/")
-	pluginID := strings.TrimSpace(strings.Trim(path, "/"))
-	if pluginID == "" {
-		http.NotFound(w, r)
-		return
-	}
-	switch r.Method {
-	case http.MethodPut:
-		s.handleAdminUpsertPlugin(w, r, pluginID)
-	case http.MethodDelete:
-		s.handleAdminDeletePlugin(w, r, pluginID)
-	default:
-		methodNotAllowed(w, "PUT, DELETE")
-	}
-}
 
 func (s *Server) handleAdminListPlugins(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
@@ -1689,7 +1509,8 @@ func (s *Server) handleAdminUpsertPlugin(w http.ResponseWriter, r *http.Request,
 	s.writeJSON(w, http.StatusOK, saved)
 }
 
-func (s *Server) handleAdminDeletePlugin(w http.ResponseWriter, r *http.Request, pluginID string) {
+func (s *Server) handleAdminDeletePlugin(w http.ResponseWriter, r *http.Request) {
+	pluginID := r.PathValue("id")
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -1711,10 +1532,6 @@ func (s *Server) handleAdminDeletePlugin(w http.ResponseWriter, r *http.Request,
 // --- Admin Overview ---
 
 func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -1747,10 +1564,6 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 // --- Activity ---
 
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
@@ -1794,10 +1607,6 @@ func (s *Server) activityForUser(user domain.User) []activityEntry {
 // --- WebSocket ---
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
 	user, ok := s.requireUserFromRequest(w, r)
 	if !ok {
 		return
@@ -1880,10 +1689,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRuntimeWebSocket(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
 	const prefix = "Bearer "
 	authorization := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authorization, prefix) || strings.TrimSpace(strings.TrimPrefix(authorization, prefix)) == "" {
