@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -15,59 +14,25 @@ import (
 // FileRegistry reads *.yaml / *.yml files from a directory, parses them as plugin
 // manifests, and hot-reloads via fsnotify.
 type FileRegistry struct {
+	baseRegistry
+
 	dir    string
 	logger *slog.Logger
 
-	mu       sync.RWMutex
-	resolved map[string]Resolved
 	pathToID map[string]string  // last-known plugin id per abs-path, for delete handling
 	pathLast map[string]Resolved // cached last-valid Resolved per abs-path (malformed-keeps-prev)
-
-	subscribersMu sync.Mutex
-	subscribers   []chan struct{}
-
-	once sync.Once
 }
 
 // NewFileRegistry creates a new FileRegistry that watches dir.
 // Neither directory existence nor format errors are fatal at construction time.
 func NewFileRegistry(dir string, logger *slog.Logger) *FileRegistry {
 	return &FileRegistry{
-		dir:      dir,
-		logger:   logger,
-		resolved: make(map[string]Resolved),
-		pathToID: make(map[string]string),
-		pathLast: make(map[string]Resolved),
+		baseRegistry: baseRegistry{resolved: make(map[string]Resolved)},
+		dir:          dir,
+		logger:       logger,
+		pathToID:     make(map[string]string),
+		pathLast:     make(map[string]Resolved),
 	}
-}
-
-// Get returns the Resolved manifest for the given plugin id, if present.
-func (r *FileRegistry) Get(id string) (Resolved, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	v, ok := r.resolved[id]
-	return v, ok
-}
-
-// List returns a snapshot copy of all currently resolved entries.
-func (r *FileRegistry) List() []Resolved {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]Resolved, 0, len(r.resolved))
-	for _, v := range r.resolved {
-		out = append(out, v)
-	}
-	return out
-}
-
-// Subscribe returns a buffered (cap 1) channel that receives an empty struct on each change.
-// Sends are non-blocking; slow consumers simply miss coalescence.
-func (r *FileRegistry) Subscribe() <-chan struct{} {
-	ch := make(chan struct{}, 1)
-	r.subscribersMu.Lock()
-	r.subscribers = append(r.subscribers, ch)
-	r.subscribersMu.Unlock()
-	return ch
 }
 
 // Run performs an initial directory scan then watches for changes via fsnotify.
@@ -218,19 +183,4 @@ func (r *FileRegistry) scan() {
 	// Atomic swap of the resolved map.
 	r.resolved = newResolved
 	r.mu.Unlock()
-}
-
-// broadcast sends an empty struct to every subscriber channel without blocking.
-func (r *FileRegistry) broadcast() {
-	r.subscribersMu.Lock()
-	subs := make([]chan struct{}, len(r.subscribers))
-	copy(subs, r.subscribers)
-	r.subscribersMu.Unlock()
-
-	for _, ch := range subs {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
 }

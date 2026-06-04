@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/mipopov/shclop/internal/domain"
@@ -22,18 +21,12 @@ type ManifestLister interface {
 // DBRegistry polls the plugin_manifests table at a configurable interval,
 // parses each row as a plugin manifest, and hot-reloads on changes.
 type DBRegistry struct {
+	baseRegistry
+
 	store    ManifestLister
 	interval time.Duration
 	logger   *slog.Logger
-
-	mu       sync.RWMutex
-	resolved map[string]Resolved
 	lastHash string
-
-	subscribersMu sync.Mutex
-	subscribers   []chan struct{}
-
-	once sync.Once
 }
 
 // NewDBRegistry creates a new DBRegistry. If interval is zero, it defaults to 10s.
@@ -42,40 +35,11 @@ func NewDBRegistry(store ManifestLister, interval time.Duration, logger *slog.Lo
 		interval = 10 * time.Second
 	}
 	return &DBRegistry{
-		store:    store,
-		interval: interval,
-		logger:   logger,
-		resolved: make(map[string]Resolved),
+		baseRegistry: baseRegistry{resolved: make(map[string]Resolved)},
+		store:        store,
+		interval:     interval,
+		logger:       logger,
 	}
-}
-
-// Get returns the Resolved manifest for the given plugin id, if present.
-func (r *DBRegistry) Get(id string) (Resolved, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	v, ok := r.resolved[id]
-	return v, ok
-}
-
-// List returns a snapshot copy of all currently resolved entries.
-func (r *DBRegistry) List() []Resolved {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]Resolved, 0, len(r.resolved))
-	for _, v := range r.resolved {
-		out = append(out, v)
-	}
-	return out
-}
-
-// Subscribe returns a buffered (cap 1) channel that receives an empty struct on each change.
-// Sends are non-blocking; slow consumers simply miss coalescence.
-func (r *DBRegistry) Subscribe() <-chan struct{} {
-	ch := make(chan struct{}, 1)
-	r.subscribersMu.Lock()
-	r.subscribers = append(r.subscribers, ch)
-	r.subscribersMu.Unlock()
-	return ch
 }
 
 // Run performs an initial synchronous poll then starts a background ticker.
@@ -170,19 +134,4 @@ func (r *DBRegistry) poll(ctx context.Context) {
 	r.mu.Unlock()
 
 	r.broadcast()
-}
-
-// broadcast sends an empty struct to every subscriber channel without blocking.
-func (r *DBRegistry) broadcast() {
-	r.subscribersMu.Lock()
-	subs := make([]chan struct{}, len(r.subscribers))
-	copy(subs, r.subscribers)
-	r.subscribersMu.Unlock()
-
-	for _, ch := range subs {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
 }
