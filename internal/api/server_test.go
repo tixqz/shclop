@@ -1351,3 +1351,57 @@ func assertJSONArray(t *testing.T, body []byte, key string) []map[string]any {
 	}
 	return result
 }
+
+func TestPanicRecover(t *testing.T) {
+	// Construct a minimal server with a logger that writes to a buffer
+	// so we can assert the structured log message.
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	s := &Server{logger: logger}
+
+	panicker := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	s.withRecover(panicker).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("got status %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	if !strings.Contains(logBuf.String(), "panic in handler") {
+		t.Errorf("expected log to contain 'panic in handler', got %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "boom") {
+		t.Errorf("expected log to contain panic value 'boom', got %q", logBuf.String())
+	}
+}
+
+// Also test that http.ErrAbortHandler re-panics (lets net/http handle it
+// as an intentional abort, no log).
+func TestPanicRecoverAbortHandler(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	s := &Server{logger: logger}
+
+	aborter := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic(http.ErrAbortHandler)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/abort", nil)
+
+	defer func() {
+		rec := recover()
+		if rec != http.ErrAbortHandler {
+			t.Fatalf("expected re-panic of http.ErrAbortHandler, got %v", rec)
+		}
+		if strings.Contains(logBuf.String(), "panic in handler") {
+			t.Errorf("did not expect log entry for abort handler")
+		}
+	}()
+
+	s.withRecover(aborter).ServeHTTP(rec, req)
+	t.Fatal("withRecover should have re-panicked")
+}

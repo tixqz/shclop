@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -309,7 +310,7 @@ func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
 		ctx:          serverCtx,
 		cancel:       serverCancel,
 	}
-	server.handler = server.withMetrics(server.routes())
+	server.handler = server.withRecover(server.withMetrics(server.routes()))
 	return server, nil
 }
 
@@ -441,6 +442,32 @@ func (s *Server) withMetrics(next http.Handler) http.Handler {
 		duration := time.Since(start).Seconds()
 		s.metrics.httpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, http.StatusText(sw.status)).Inc()
 		s.metrics.httpRequestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(duration)
+	})
+}
+
+func (s *Server) withRecover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			// Honour the stdlib contract — net/http uses this sentinel to
+			// intentionally abort a handler without logging.
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			if s.logger != nil {
+				s.logger.Error("panic in handler",
+					"error", fmt.Sprintf("%v", rec),
+					"path", r.URL.Path,
+					"method", r.Method,
+					"stack", string(debug.Stack()),
+				)
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}()
+		next.ServeHTTP(w, r)
 	})
 }
 
