@@ -330,7 +330,7 @@ func (s *Server) requireBootstrapPassword() error {
 
 func (s *Server) bootstrapAdmin() {
 	s.bootstrapMu.Do(func() {
-		ctx := requestContext()
+		ctx := context.Background()
 		username := s.cfg.BootstrapAdminUsername
 		if username == "" {
 			username = "admin"
@@ -371,17 +371,6 @@ func (s *Server) bootstrapAdmin() {
 		}
 	})
 }
-
-func requestContext() requestCtx {
-	return requestCtx{}
-}
-
-type requestCtx struct{}
-
-func (requestCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
-func (requestCtx) Done() <-chan struct{}       { return nil }
-func (requestCtx) Err() error                  { return nil }
-func (requestCtx) Value(key any) any           { return nil }
 
 func sandboxProviderFromConfig(cfg config.Config) (sandbox.RuntimeProvider, error) {
 	switch cfg.SandboxProvider {
@@ -1846,7 +1835,17 @@ func (s *Server) writeStoreError(w http.ResponseWriter, err error) {
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, value any) {
-	if err := writeJSON(w, status, value); err != nil && s.logger != nil {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(value); err != nil {
+		if s.logger != nil {
+			s.logger.Error("encode response failed", "error", err)
+		}
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if _, err := w.Write(body.Bytes()); err != nil && s.logger != nil {
 		s.logger.Error("write response failed", "error", err)
 	}
 }
@@ -1877,19 +1876,6 @@ func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, index)
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) error {
-	var body bytes.Buffer
-	if err := json.NewEncoder(&body).Encode(value); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return err
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, err := w.Write(body.Bytes())
-	return err
 }
 
 func methodNotAllowed(w http.ResponseWriter, allow string) {
