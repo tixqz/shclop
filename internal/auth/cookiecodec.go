@@ -2,16 +2,13 @@ package auth
 
 import (
 	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"io"
 	"time"
+
+	"github.com/mipopov/shclop/internal/crypto"
 )
 
 var ErrExpired = errors.New("oidc state cookie expired")
@@ -27,23 +24,16 @@ type OIDCStateCookie struct {
 }
 
 type CookieCodec struct {
-	key []byte
-	now func() time.Time
+	aead *crypto.AESGCM
+	now  func() time.Time
 }
 
 func NewCookieCodec(rawKey []byte) (*CookieCodec, error) {
-	if len(rawKey) == 0 {
+	aead, err := crypto.NewAESGCM(rawKey)
+	if err != nil {
 		return nil, errors.New("cookiecodec: key must not be empty")
 	}
-	var key []byte
-	if len(rawKey) == 32 {
-		key = make([]byte, 32)
-		copy(key, rawKey)
-	} else {
-		h := sha256.Sum256(rawKey)
-		key = h[:]
-	}
-	return &CookieCodec{key: key, now: time.Now}, nil
+	return &CookieCodec{aead: aead, now: time.Now}, nil
 }
 
 func NewCookieCodecFromConfig(configKey string) (*CookieCodec, error) {
@@ -63,21 +53,10 @@ func (c *CookieCodec) Encode(payload OIDCStateCookie) (string, error) {
 		return "", fmt.Errorf("cookiecodec encode: gob: %w", err)
 	}
 
-	block, err := aes.NewCipher(c.key)
+	ciphertext, err := c.aead.Seal(buf.Bytes())
 	if err != nil {
-		return "", fmt.Errorf("cookiecodec encode: aes: %w", err)
+		return "", fmt.Errorf("cookiecodec encode: %w", err)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("cookiecodec encode: gcm: %w", err)
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", fmt.Errorf("cookiecodec encode: nonce: %w", err)
-	}
-
-	ciphertext := gcm.Seal(nonce, nonce, buf.Bytes(), nil)
 	return base64.RawURLEncoding.EncodeToString(ciphertext), nil
 }
 
@@ -87,21 +66,7 @@ func (c *CookieCodec) Decode(encoded string) (OIDCStateCookie, error) {
 		return OIDCStateCookie{}, fmt.Errorf("%w: base64: %v", ErrInvalidCookie, err)
 	}
 
-	block, err := aes.NewCipher(c.key)
-	if err != nil {
-		return OIDCStateCookie{}, fmt.Errorf("%w: aes: %v", ErrInvalidCookie, err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return OIDCStateCookie{}, fmt.Errorf("%w: gcm: %v", ErrInvalidCookie, err)
-	}
-
-	nonceSize := gcm.NonceSize()
-	if len(raw) < nonceSize {
-		return OIDCStateCookie{}, fmt.Errorf("%w: too short", ErrInvalidCookie)
-	}
-
-	plaintext, err := gcm.Open(nil, raw[:nonceSize], raw[nonceSize:], nil)
+	plaintext, err := c.aead.Open(raw)
 	if err != nil {
 		return OIDCStateCookie{}, fmt.Errorf("%w: decrypt: %v", ErrInvalidCookie, err)
 	}
