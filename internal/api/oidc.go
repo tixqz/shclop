@@ -337,6 +337,16 @@ func (s *Server) handleGetAuthSettings(w http.ResponseWriter, r *http.Request) {
 			Status:      string(p.Status),
 			Error:       p.LastErr,
 			Enabled:     p.Enabled,
+			Diagnostics: &domain.IdPProviderDiagnostics{
+				Issuer:      p.Config.Issuer,
+				ClientID:    p.Config.ClientID,
+				RedirectURI: p.Config.RedirectURI,
+				Scopes:      append([]string(nil), p.Config.Scopes...),
+				EmailClaim:  p.Config.EmailClaim,
+				NameClaim:   p.Config.NameClaim,
+				GroupsClaim: p.Config.GroupsClaim,
+				SecretSet:   p.Config.ClientSecret != "",
+			},
 		})
 	}
 

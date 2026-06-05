@@ -3,7 +3,11 @@ import {
   type Agent,
   type AdminAuthSettings,
   type AdminOverview,
+  type AdminPluginManifest,
+  type ActivityEntry,
+  type ActivityFilters,
   type AuthMode,
+  type AuthProvider,
   type AuthProvidersResponse,
   type ChatEvent,
   type IntegrationProvider,
@@ -41,12 +45,16 @@ import {
   adminListUserIdentities,
   adminLinkIdentity,
   adminUnlinkIdentity,
+  adminListPlugins,
+  adminUpsertPlugin,
+  adminDeletePlugin,
+  listActivity,
   registerAuthErrorHandler,
 } from './api';
 
 type Page = 'agents' | 'integrations' | 'admin';
 
-type AdminTab = 'overview' | 'users' | 'models' | 'gateway' | 'auth';
+type AdminTab = 'overview' | 'users' | 'models' | 'gateway' | 'auth' | 'plugins' | 'activity';
 
 type IntegrationsView = 'list' | 'add' | 'detail';
 type AddStep = 'picker' | 'form';
@@ -180,6 +188,30 @@ export default function App() {
   const [adminAuthSettings, setAdminAuthSettings] = useState<AdminAuthSettings | null>(null);
   const [authModeForm, setAuthModeForm] = useState<AuthMode>('local');
   const [authSettingsSaving, setAuthSettingsSaving] = useState(false);
+
+  // admin Plugins
+  const [plugins, setPlugins] = useState<AdminPluginManifest[]>([]);
+  const [editingPlugin, setEditingPlugin] = useState<AdminPluginManifest | null>(null);
+  const [pluginModalOpen, setPluginModalOpen] = useState(false);
+  const [pluginForm, setPluginForm] = useState({ id: '', yaml: '', enabled: true });
+  const [pluginSaving, setPluginSaving] = useState(false);
+  const [pluginError, setPluginError] = useState<string>('');
+
+  // admin Activity
+  const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
+  const [activityFilters, setActivityFilters] = useState<ActivityFilters>({});
+  const [activityFilterForm, setActivityFilterForm] = useState({
+    q: '',
+    type: '', // comma-separated input, split to array on apply
+    actor_id: '',
+    agent_id: '',
+    since: '',
+  });
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [expandedActivity, setExpandedActivity] = useState<Set<number>>(new Set());
+
+  // Auth provider diagnostics modal
+  const [authDetailsProvider, setAuthDetailsProvider] = useState<AuthProvider | null>(null);
 
   // user identities modal
   const [identitiesUserId, setIdentitiesUserId] = useState('');
@@ -835,6 +867,134 @@ export default function App() {
     }
   }
 
+  // ── Plugins ──
+
+  async function loadPlugins() {
+    try {
+      const list = await adminListPlugins();
+      setPlugins(list);
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to load plugins');
+    }
+  }
+
+  function handleOpenNewPlugin() {
+    setEditingPlugin(null);
+    setPluginForm({ id: '', yaml: '', enabled: true });
+    setPluginError('');
+    setPluginModalOpen(true);
+  }
+
+  function handleEditPlugin(p: AdminPluginManifest) {
+    setEditingPlugin(p);
+    setPluginForm({ id: p.ID, yaml: p.YAML, enabled: p.Enabled });
+    setPluginError('');
+    setPluginModalOpen(true);
+  }
+
+  async function handleSubmitPlugin() {
+    setPluginSaving(true);
+    setPluginError('');
+    try {
+      const body = {
+        id: pluginForm.id || undefined,
+        yaml: pluginForm.yaml,
+        enabled: pluginForm.enabled,
+      };
+      await adminUpsertPlugin(body, editingPlugin?.ID);
+      setPluginModalOpen(false);
+      await loadPlugins();
+    } catch (err: unknown) {
+      setPluginError(err instanceof Error ? err.message : 'Failed to save plugin');
+    } finally {
+      setPluginSaving(false);
+    }
+  }
+
+  async function handleDeletePlugin(p: AdminPluginManifest) {
+    if (!confirm(`Delete plugin "${p.ID}"? This cannot be undone.`)) return;
+    setStatusError('');
+    try {
+      await adminDeletePlugin(p.ID);
+      await loadPlugins();
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to delete plugin');
+    }
+  }
+
+  // ── Activity ──
+
+  async function loadActivity(filters: ActivityFilters) {
+    setActivityLoading(true);
+    try {
+      const res = await listActivity(filters);
+      setActivityEntries(res.activity ?? []);
+      setExpandedActivity(new Set());
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to load activity');
+    } finally {
+      setActivityLoading(false);
+    }
+  }
+
+  function buildActivityFilters(): ActivityFilters {
+    const f: ActivityFilters = {};
+    if (activityFilterForm.q.trim() !== '') f.q = activityFilterForm.q.trim();
+    if (activityFilterForm.type.trim() !== '') {
+      f.type = activityFilterForm.type
+        .split(',')
+        .map((t) => t.trim())
+        .filter((t) => t !== '');
+    }
+    if (activityFilterForm.actor_id.trim() !== '') f.actor_id = activityFilterForm.actor_id.trim();
+    if (activityFilterForm.agent_id.trim() !== '') f.agent_id = activityFilterForm.agent_id.trim();
+    if (activityFilterForm.since.trim() !== '') {
+      // datetime-local → RFC3339
+      try {
+        f.since = new Date(activityFilterForm.since).toISOString();
+      } catch {
+        // Ignore invalid date; backend will handle empty filter
+      }
+    }
+    return f;
+  }
+
+  function handleApplyActivityFilters() {
+    const next = buildActivityFilters();
+    setActivityFilters(next);
+    loadActivity(next);
+  }
+
+  function handleResetActivityFilters() {
+    setActivityFilterForm({ q: '', type: '', actor_id: '', agent_id: '', since: '' });
+    setActivityFilters({});
+    loadActivity({});
+  }
+
+  function handleRefreshActivity() {
+    loadActivity(activityFilters);
+  }
+
+  function toggleActivityExpanded(idx: number) {
+    setExpandedActivity((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }
+
+  // Lazy load plugins / activity when their admin tab is opened
+  useEffect(() => {
+    if (!isAdmin || page !== 'admin') return;
+    if (adminTab === 'plugins') {
+      loadPlugins();
+    } else if (adminTab === 'activity') {
+      loadActivity(activityFilters);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, page, adminTab]);
+
   // ── Render ──
 
   if (!token) {
@@ -1260,6 +1420,18 @@ export default function App() {
               >
                 Auth
               </button>
+              <button
+                className={`admin-tab ${adminTab === 'plugins' ? 'active' : ''}`}
+                onClick={() => setAdminTab('plugins')}
+              >
+                Plugins
+              </button>
+              <button
+                className={`admin-tab ${adminTab === 'activity' ? 'active' : ''}`}
+                onClick={() => setAdminTab('activity')}
+              >
+                Activity
+              </button>
             </div>
 
             {/* Overview tab */}
@@ -1684,6 +1856,7 @@ export default function App() {
                           <th>Status</th>
                           <th>Enabled</th>
                           <th>Last Error</th>
+                          <th></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1711,6 +1884,14 @@ export default function App() {
                             <td className="cell-mono" style={{ color: 'var(--danger)', fontSize: '0.8rem' }}>
                               {p.error ?? ''}
                             </td>
+                            <td>
+                              <button
+                                className="btn btn-sm btn-ghost"
+                                onClick={() => setAuthDetailsProvider(p)}
+                              >
+                                Details
+                              </button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -1720,6 +1901,213 @@ export default function App() {
                   <div className="empty-state" style={{ marginTop: 16 }}>No OIDC providers configured.</div>
                 ) : (
                   <div className="empty-state" style={{ marginTop: 16 }}>Loading…</div>
+                )}
+              </div>
+            ) : null}
+
+            {/* Plugins tab */}
+            {adminTab === 'plugins' ? (
+              <div className="admin-section">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <h2 style={{ margin: 0 }}>Plugins</h2>
+                  <button className="btn btn-primary" onClick={handleOpenNewPlugin}>
+                    + New plugin
+                  </button>
+                </div>
+
+                {plugins.length === 0 ? (
+                  <div className="empty-state">No plugins.</div>
+                ) : (
+                  <div className="card card-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>Enabled</th>
+                          <th>Revision</th>
+                          <th>Updated</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {plugins.map((p) => (
+                          <tr key={p.ID}>
+                            <td className="cell-mono">{p.ID}</td>
+                            <td>
+                              {p.Enabled ? (
+                                <span className="badge badge-active">Enabled</span>
+                              ) : (
+                                <span className="badge badge-disabled">Disabled</span>
+                              )}
+                            </td>
+                            <td>{p.Revision}</td>
+                            <td className="cell-ts">{timeAgo(p.UpdatedAt)}</td>
+                            <td>
+                              <button
+                                className="btn btn-sm btn-ghost"
+                                onClick={() => handleEditPlugin(p)}
+                              >
+                                Edit
+                              </button>
+                              {' '}
+                              <button
+                                className="btn btn-sm btn-danger"
+                                onClick={() => handleDeletePlugin(p)}
+                              >
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {/* Activity tab */}
+            {adminTab === 'activity' ? (
+              <div className="admin-section">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <h2 style={{ margin: 0 }}>Activity</h2>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={handleRefreshActivity}
+                    disabled={activityLoading}
+                  >
+                    {activityLoading ? 'Refreshing…' : 'Refresh'}
+                  </button>
+                </div>
+
+                <div className="card card-form">
+                  <div className="form-row form-row-inline">
+                    <div className="form-group">
+                      <label>Search</label>
+                      <input
+                        type="text"
+                        value={activityFilterForm.q}
+                        onChange={(e) => setActivityFilterForm((f) => ({ ...f, q: e.target.value }))}
+                        placeholder="text contains…"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Type</label>
+                      <input
+                        type="text"
+                        value={activityFilterForm.type}
+                        onChange={(e) => setActivityFilterForm((f) => ({ ...f, type: e.target.value }))}
+                        placeholder="comma-separated, e.g. agent.created,agent.deleted"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Actor ID</label>
+                      <input
+                        type="text"
+                        value={activityFilterForm.actor_id}
+                        onChange={(e) => setActivityFilterForm((f) => ({ ...f, actor_id: e.target.value }))}
+                        placeholder="user id"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Agent ID</label>
+                      <input
+                        type="text"
+                        value={activityFilterForm.agent_id}
+                        onChange={(e) => setActivityFilterForm((f) => ({ ...f, agent_id: e.target.value }))}
+                        placeholder="agent id"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Since</label>
+                      <input
+                        type="datetime-local"
+                        value={activityFilterForm.since}
+                        onChange={(e) => setActivityFilterForm((f) => ({ ...f, since: e.target.value }))}
+                      />
+                    </div>
+                    <div className="form-group form-group-submit">
+                      <label>&nbsp;</label>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button
+                          className="btn btn-primary"
+                          onClick={handleApplyActivityFilters}
+                          disabled={activityLoading}
+                        >
+                          Apply filters
+                        </button>
+                        <button
+                          className="btn btn-ghost"
+                          onClick={handleResetActivityFilters}
+                          disabled={activityLoading}
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {activityLoading ? (
+                  <div className="empty-state">Loading…</div>
+                ) : activityEntries.length === 0 ? (
+                  <div className="empty-state">No activity.</div>
+                ) : (
+                  <div className="card card-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>Type</th>
+                          {isAdmin ? <th>Actor</th> : null}
+                          <th>Agent</th>
+                          <th>Message</th>
+                          <th>Details</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activityEntries.map((entry, idx) => {
+                          const isExpanded = expandedActivity.has(idx);
+                          const hasDetails = entry.details && Object.keys(entry.details).length > 0;
+                          return (
+                            <React.Fragment key={`${entry.time}-${idx}`}>
+                              <tr>
+                                <td className="cell-ts">{timeAgo(entry.time)}</td>
+                                <td>
+                                  <span className="badge">{entry.type}</span>
+                                </td>
+                                {isAdmin ? (
+                                  <td className="cell-mono">{entry.actor_id ?? '—'}</td>
+                                ) : null}
+                                <td className="cell-mono">{entry.agent_id ?? '—'}</td>
+                                <td>{entry.message ?? ''}</td>
+                                <td>
+                                  {hasDetails ? (
+                                    <button
+                                      className="btn btn-sm btn-ghost"
+                                      onClick={() => toggleActivityExpanded(idx)}
+                                      title={isExpanded ? 'Collapse' : 'Expand'}
+                                    >
+                                      {isExpanded ? '▾' : '▸'}
+                                    </button>
+                                  ) : null}
+                                </td>
+                              </tr>
+                              {isExpanded && hasDetails ? (
+                                <tr>
+                                  <td colSpan={isAdmin ? 6 : 5}>
+                                    <pre className="cell-mono" style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: '0.8rem' }}>
+                                      {JSON.stringify(entry.details, null, 2)}
+                                    </pre>
+                                  </td>
+                                </tr>
+                              ) : null}
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </div>
             ) : null}
@@ -1834,6 +2222,110 @@ export default function App() {
                 }
               >
                 {identityLinking ? 'Linking…' : 'Link identity'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── Auth Provider Diagnostics Modal ── */}
+      {authDetailsProvider ? (
+        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setAuthDetailsProvider(null); }}>
+          <div className="modal" style={{ maxWidth: 700 }}>
+            <div className="modal-head">
+              <h2>Provider Details — {authDetailsProvider.display_name}</h2>
+              <button className="btn btn-ghost btn-sm modal-close" onClick={() => setAuthDetailsProvider(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              {authDetailsProvider.diagnostics ? (
+                <div className="card card-table">
+                  <table>
+                    <tbody>
+                      <tr><td>Issuer</td><td className="cell-mono">{authDetailsProvider.diagnostics.issuer}</td></tr>
+                      <tr><td>Client ID</td><td className="cell-mono">{authDetailsProvider.diagnostics.client_id}</td></tr>
+                      <tr><td>Redirect URI</td><td className="cell-mono">{authDetailsProvider.diagnostics.redirect_uri}</td></tr>
+                      <tr><td>Scopes</td><td className="cell-mono">{authDetailsProvider.diagnostics.scopes.join(' ')}</td></tr>
+                      <tr><td>Email Claim</td><td className="cell-mono">{authDetailsProvider.diagnostics.email_claim}</td></tr>
+                      <tr><td>Name Claim</td><td className="cell-mono">{authDetailsProvider.diagnostics.name_claim}</td></tr>
+                      <tr><td>Groups Claim</td><td className="cell-mono">{authDetailsProvider.diagnostics.groups_claim}</td></tr>
+                      <tr>
+                        <td>Client Secret</td>
+                        <td>
+                          {authDetailsProvider.diagnostics.secret_set ? (
+                            <span className="badge badge-active">••• set</span>
+                          ) : (
+                            <span className="badge badge-disabled">not set</span>
+                          )}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="empty-state">No diagnostics available.</div>
+              )}
+              <p style={{ fontSize: '0.85rem', color: 'var(--muted, #888)', marginTop: 12 }}>
+                These parameters come from environment configuration. Edit <code>SHCLOP_IDP_*</code> env vars and restart the server to change them.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setAuthDetailsProvider(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── Plugin Upsert Modal ── */}
+      {pluginModalOpen ? (
+        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setPluginModalOpen(false); }}>
+          <div className="modal" style={{ maxWidth: 800 }}>
+            <div className="modal-head">
+              <h2>{editingPlugin ? `Edit Plugin — ${editingPlugin.ID}` : 'New Plugin'}</h2>
+              <button className="btn btn-ghost btn-sm modal-close" onClick={() => setPluginModalOpen(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label>ID</label>
+                <input
+                  type="text"
+                  value={pluginForm.id}
+                  onChange={(e) => setPluginForm((f) => ({ ...f, id: e.target.value }))}
+                  placeholder="my-plugin"
+                  readOnly={editingPlugin !== null}
+                  disabled={editingPlugin !== null}
+                />
+              </div>
+              <div className="form-group form-group-check">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={pluginForm.enabled}
+                    onChange={(e) => setPluginForm((f) => ({ ...f, enabled: e.target.checked }))}
+                  />{' '}
+                  Enabled
+                </label>
+              </div>
+              <div className="form-group">
+                <label>YAML</label>
+                <textarea
+                  value={pluginForm.yaml}
+                  onChange={(e) => setPluginForm((f) => ({ ...f, yaml: e.target.value }))}
+                  rows={14}
+                  spellCheck={false}
+                  style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.85rem' }}
+                  placeholder={'kind: Plugin\nname: example\n…'}
+                />
+              </div>
+              {pluginError ? <div className="form-error">{pluginError}</div> : null}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setPluginModalOpen(false)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                onClick={handleSubmitPlugin}
+                disabled={pluginSaving || pluginForm.yaml.trim() === ''}
+              >
+                {pluginSaving ? 'Saving…' : editingPlugin ? 'Save plugin' : 'Create plugin'}
               </button>
             </div>
           </div>

@@ -197,12 +197,31 @@ type UserIdentity struct {
 }
 
 // IdPProviderSummary is the public, non-secret view of a configured IdP.
+//
+// Diagnostics is populated only on admin responses (auth-settings endpoint)
+// and exposes non-secret config fields plus a SecretSet boolean. It is never
+// included on the public providers list shown on the login page.
 type IdPProviderSummary struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"display_name"`
-	Status      string `json:"status"` // "ready" | "degraded"
-	Error       string `json:"error,omitempty"`
-	Enabled     bool   `json:"enabled"`
+	Name        string                  `json:"name"`
+	DisplayName string                  `json:"display_name"`
+	Status      string                  `json:"status"` // "ready" | "degraded"
+	Error       string                  `json:"error,omitempty"`
+	Enabled     bool                    `json:"enabled"`
+	Diagnostics *IdPProviderDiagnostics `json:"diagnostics,omitempty"`
+}
+
+// IdPProviderDiagnostics is the admin-only view of an OIDC provider's
+// configuration. ClientSecret is never serialized; SecretSet reflects whether
+// one is set in the underlying env config.
+type IdPProviderDiagnostics struct {
+	Issuer      string   `json:"issuer"`
+	ClientID    string   `json:"client_id"`
+	RedirectURI string   `json:"redirect_uri"`
+	Scopes      []string `json:"scopes"`
+	EmailClaim  string   `json:"email_claim"`
+	NameClaim   string   `json:"name_claim"`
+	GroupsClaim string   `json:"groups_claim"`
+	SecretSet   bool     `json:"secret_set"`
 }
 
 // AuthSettings is the admin-visible auth configuration.

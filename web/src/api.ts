@@ -211,6 +211,18 @@ export type AuthProvider = {
   status: 'ready' | 'degraded';
   error?: string;
   enabled: boolean;
+  diagnostics?: AuthProviderDiagnostics;
+};
+
+export type AuthProviderDiagnostics = {
+  issuer: string;
+  client_id: string;
+  redirect_uri: string;
+  scopes: string[];
+  email_claim: string;
+  name_claim: string;
+  groups_claim: string;
+  secret_set: boolean;
 };
 
 export type AuthProvidersResponse = {
@@ -465,6 +477,98 @@ export async function adminUnlinkIdentity(
 
 export async function adminGetOverview(): Promise<AdminOverview> {
   return apiFetch<AdminOverview>('/api/admin/overview');
+}
+
+// ── Admin: Plugins ──
+// NOTE: the backend PluginManifest struct in internal/domain/domain.go has no
+// json tags, so Go's encoding/json uses the exact (PascalCase) field names.
+
+export type AdminPluginManifest = {
+  ID: string;
+  YAML: string;
+  Enabled: boolean;
+  Revision: number;
+  CreatedAt: string;
+  UpdatedAt: string;
+};
+
+export async function adminListPlugins(): Promise<AdminPluginManifest[]> {
+  return apiFetch<AdminPluginManifest[]>('/api/admin/plugins');
+}
+
+export async function adminUpsertPlugin(
+  body: { id?: string; yaml: string; enabled: boolean },
+  pathID?: string,
+): Promise<AdminPluginManifest> {
+  if (pathID !== undefined && pathID !== '') {
+    return apiFetch<AdminPluginManifest>(`/api/admin/plugins/${encodeURIComponent(pathID)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+  }
+  return apiFetch<AdminPluginManifest>('/api/admin/plugins', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function adminDeletePlugin(id: string): Promise<void> {
+  return apiFetch<void>(`/api/admin/plugins/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// ── Activity ──
+
+export type ActivityEntry = {
+  time: string;
+  type: string;
+  actor_id?: string;
+  agent_id?: string;
+  message?: string;
+  details?: Record<string, unknown>;
+};
+
+export type ActivityFilters = {
+  type?: string[];
+  actor_id?: string;
+  agent_id?: string;
+  since?: string;
+  q?: string;
+  limit?: number;
+};
+
+export async function listActivity(
+  filters?: ActivityFilters,
+): Promise<{ activity: ActivityEntry[] }> {
+  const params = new URLSearchParams();
+  if (filters) {
+    if (filters.type) {
+      for (const t of filters.type) {
+        if (t !== '') {
+          params.append('type', t);
+        }
+      }
+    }
+    if (filters.actor_id !== undefined && filters.actor_id !== '') {
+      params.set('actor_id', filters.actor_id);
+    }
+    if (filters.agent_id !== undefined && filters.agent_id !== '') {
+      params.set('agent_id', filters.agent_id);
+    }
+    if (filters.since !== undefined && filters.since !== '') {
+      params.set('since', filters.since);
+    }
+    if (filters.q !== undefined && filters.q !== '') {
+      params.set('q', filters.q);
+    }
+    if (filters.limit !== undefined) {
+      params.set('limit', String(filters.limit));
+    }
+  }
+  const qs = params.toString();
+  const path = qs ? `/api/activity?${qs}` : '/api/activity';
+  return apiFetch<{ activity: ActivityEntry[] }>(path);
 }
 
 // ── Health ──

@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1522,6 +1523,11 @@ func (s *Server) handleAdminUpsertPlugin(w http.ResponseWriter, r *http.Request,
 		s.writeStoreError(w, err)
 		return
 	}
+	s.recordActivity("admin.plugin_upserted", user.ID, "", "plugin upserted", map[string]any{
+		"id":       saved.ID,
+		"enabled":  saved.Enabled,
+		"revision": saved.Revision,
+	})
 	s.writeJSON(w, http.StatusOK, saved)
 }
 
@@ -1542,6 +1548,7 @@ func (s *Server) handleAdminDeletePlugin(w http.ResponseWriter, r *http.Request)
 		s.writeStoreError(w, err)
 		return
 	}
+	s.recordActivity("admin.plugin_deleted", user.ID, "", "plugin deleted", map[string]any{"id": pluginID})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1584,7 +1591,72 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"activity": s.activityForUser(user)})
+
+	q := r.URL.Query()
+	types := q["type"]
+	actorID := strings.TrimSpace(q.Get("actor_id"))
+	agentID := strings.TrimSpace(q.Get("agent_id"))
+	queryText := strings.ToLower(strings.TrimSpace(q.Get("q")))
+
+	var sinceAt time.Time
+	if raw := strings.TrimSpace(q.Get("since")); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			http.Error(w, "bad request: invalid 'since' (expected RFC3339)", http.StatusBadRequest)
+			return
+		}
+		sinceAt = t
+	}
+
+	limit := 200
+	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			http.Error(w, "bad request: invalid 'limit'", http.StatusBadRequest)
+			return
+		}
+		if n > 200 {
+			n = 200
+		}
+		limit = n
+	}
+
+	typeSet := make(map[string]struct{}, len(types))
+	for _, t := range types {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			typeSet[t] = struct{}{}
+		}
+	}
+
+	all := s.activityForUser(user)
+	filtered := make([]activityEntry, 0, len(all))
+	for _, entry := range all {
+		if len(typeSet) > 0 {
+			if _, ok := typeSet[entry.Type]; !ok {
+				continue
+			}
+		}
+		if actorID != "" && entry.ActorID != actorID {
+			continue
+		}
+		if agentID != "" && entry.AgentID != agentID {
+			continue
+		}
+		if !sinceAt.IsZero() && entry.Time.Before(sinceAt) {
+			continue
+		}
+		if queryText != "" && !strings.Contains(strings.ToLower(entry.Message), queryText) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+
+	if len(filtered) > limit {
+		filtered = filtered[len(filtered)-limit:]
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{"activity": filtered})
 }
 
 func (s *Server) recordActivity(eventType, actorID, agentID, message string, details map[string]any) {
